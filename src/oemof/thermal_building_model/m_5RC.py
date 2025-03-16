@@ -18,7 +18,8 @@ from pyomo.core.base.block import ScalarBlock
 from pyomo.environ import Constraint
 from pyomo.environ import Set
 from pyomo.environ import Var
-
+from pyomo import environ as po
+import warnings
 
 class M5RC(network.Node):
     r"""
@@ -76,11 +77,11 @@ class M5RC(network.Node):
         t_outside: List,
         solar_gains: List,
         internal_gains: List,
+        t_set_heating: List | float,
+        t_set_cooling: List | float,
         inputs=None,
         outputs=None,
         phi_m_tot: float = 0,
-        t_set_heating: float = 20,
-        t_set_cooling: float = 40,
         t_inital: float = 20,
         t_m: float = 20,
         t_m_ts: float = 20,
@@ -101,7 +102,6 @@ class M5RC(network.Node):
         self.t_inital = t_inital
         self.t_m = t_m
         self.t_m_ts = t_m_ts
-
         self.floor_area = self.building_config.floor_area  # [m2] Floor Area
         self.mass_area = (
             self.building_config.mass_area
@@ -136,48 +136,49 @@ class M5RC(network.Node):
             []
         )  # [W] Combination of internal and solar gains directly to the medium
         self.phi_ia = []  # [W] Combination of internal and solar gains to the air
+
         for i in range(len(self.solar_gains)):
             self.h_tr_1 = (
-                self.calc_h_tr_1()
+                self.calc_h_tr_1(self)
             )  # [W/K] combined heat conductance, see function for definition
             self.h_tr_2 = (
-                self.calc_h_tr_2()
+                self.calc_h_tr_2(self)
             )  # [W/K] combined heat conductance, see function for definition
             self.h_tr_3 = (
-                self.calc_h_tr_3()
+                self.calc_h_tr_3(self)
             )  # [W/K] combined heat conductance, see function for definition
-            self.phi_ia.append(self.calc_phi_ia(i))
-            self.phi_st.append(self.calc_phi_st(i))
-            self.phi_m.append(self.calc_phi_m(i))
-
+            self.phi_ia.append(self.calc_phi_ia(self,i))
+            self.phi_st.append(self.calc_phi_st(self,i))
+            self.phi_m.append(self.calc_phi_m(self,i))
+    @staticmethod
     def calc_h_tr_1(self):
         """
         Definition to simplify calc_phi_m_tot
         (C.6) in [C.3 ISO 13790]
         """
         return 1.0 / (1.0 / self.h_ve + 1.0 / self.h_tr_is)
-
+    @staticmethod
     def calc_h_tr_2(self):
         """
         Definition to simplify calc_phi_m_tot
         (C.7) in [C.3 ISO 13790]
         """
         return self.h_tr_1 + self.h_tr_w
-
+    @staticmethod
     def calc_h_tr_3(self):
         """
         Definition to simplify calc_phi_m_tot
         (C.8) in [C.3 ISO 13790]
         """
         return 1.0 / (1.0 / self.h_tr_2 + 1.0 / self.h_tr_ms)
-
+    @staticmethod
     def calc_phi_ia(self, i: float):
         """
         Heat flow in [W] to the air node
         (based on the breakdown in section C.2) formulas C.1-C.3 in [ISO 13790]
         """
         return 0.5 * self.internal_gains[i]
-
+    @staticmethod
     def calc_phi_st(self, i: float):
         """
         Heat flow in [W] to the surface node
@@ -186,7 +187,7 @@ class M5RC(network.Node):
         return (1 - (self.mass_area / self.A_t) - (self.h_tr_w / (9.1 * self.A_t))) * (
             0.5 * self.internal_gains[i] + self.solar_gains[i]
         )
-
+    @staticmethod
     def calc_phi_m(self, i: float):
         """
         Heatflow in [W] to the thermal mass node
@@ -208,7 +209,6 @@ class M5RC(network.Node):
 
     def constraint_group(self):
         return GenericBuildingBlock
-
 
 class GenericBuildingBlock(ScalarBlock):
     r"""GenericBuildingBlock without an :class:`.Investment` object.
@@ -300,9 +300,17 @@ class GenericBuildingBlock(ScalarBlock):
             Rule definition for bounds of internal_temperature/t_air variable of
             storage n in timestep t.
             """
+            if isinstance(n.t_set_heating, (float, int)):
+                t_set_heating = n.t_set_heating
+            elif isinstance(n.t_set_heating, List):
+                t_set_heating = n.t_set_heating[t]
+            if isinstance(n.t_set_cooling, (float, int)):
+                t_set_cooling = n.t_set_cooling
+            elif isinstance(n.t_set_cooling, List):
+                t_set_cooling = n.t_set_cooling[t]
             bounds = (
-                n.t_set_heating,
-                n.t_set_cooling,
+                t_set_heating,
+                t_set_cooling,
             )
             return bounds
 
@@ -311,6 +319,7 @@ class GenericBuildingBlock(ScalarBlock):
             m.TIMEPOINTS,
             bounds=_internal_temperature_bound_rule,
         )
+
         self.t_m_ts = Var(self.BUILDING, m.TIMEPOINTS)
 
         self.phi_m_tot = Var(self.BUILDING, m.TIMEPOINTS)
@@ -335,8 +344,8 @@ class GenericBuildingBlock(ScalarBlock):
             of every storage n and every timestep.
             """
             t_m_last_ts = block.t_m_ts[n, t]
-            phi_hc_heat = m.flow[i[n], n, p, t]
-            phi_hc_cool = m.flow[n, o[n], p, t]
+            phi_hc_heat = m.flow[i[n], n, t]
+            phi_hc_cool = m.flow[n, o[n], t]
             phi_hc_nd = phi_hc_heat - phi_hc_cool
 
             phi_m_tot = (
@@ -367,8 +376,8 @@ class GenericBuildingBlock(ScalarBlock):
             Rule definition for the building temperature t_air
             of every storage n and every timestep.
             """
-            phi_hc_heat = m.flow[i[n], n, p, t]
-            phi_hc_cool = m.flow[n, o[n], p, t]
+            phi_hc_heat = m.flow[i[n], n, t]
+            phi_hc_cool = m.flow[n, o[n], t]
             phi_hc_nd = phi_hc_heat - phi_hc_cool
             t_m_last_ts = block.t_m_ts[n, t]
             t_m_current_ts = block.t_m_ts[n, t + 1]
@@ -399,3 +408,278 @@ class GenericBuildingBlock(ScalarBlock):
             return 0
 
         return 0
+
+'''
+class GenericBuildingBlock(ScalarBlock):
+    r"""GenericBuildingBlock without an :class:`.Investment` object.
+
+    **The following sets are created:** (-> see basic sets at
+    :class:`.Model` )
+
+    BUILDING
+        A set with all :py:class:`~.GenericBuilding` objects, which do not have an
+        :attr:`investment` of type :class:`.Investment`.
+
+    **The following variables are created:**
+
+    t_air
+        Internal building air temperature  for every storage and timestep.
+        temperature at the beginning is set by the parameter `t_inital`.
+        The variable of storage s and timestep t can be accessed by:
+        `om.GenericBuildingBlock.t_air[s, t]`
+
+    t_m_ts
+        Temperature  of the knot, which represents the mass of
+        the building zone. This temperature is calculated based on
+        the value of the last timestep.
+        The variable of storage s and timestep t can be accessed by:
+        `om.GenericBuildingBlock.t_m_ts[s, t]`
+
+    **The following constraints are created:**
+
+    Building balance ts :attr:`om.Building.balance_rule_ts[n, t]`
+        .. math:: \phi_{m\_tot}(t) = \phi_m(t) + h_{tr\_em} \cdot t_e(t) +
+        \frac{h_{tr\_3}}{h_{tr\_2}} \cdot \left( \phi_{st}(t) +
+        h_{tr\_w} \cdot t_e(t) + h_{tr\_1} \cdot
+        \left( \frac{\phi_{ia}(t) +\phi_{i}(p, t) -
+        \phi_{o}(p, t)}{h_{ve}} + t_e(t) \right) \right)
+
+        .. math:: t_{m\_t} =  &t_{m\_t}(t-1) \cdot
+        \left(\frac{c_m}{3600} - 0.5 \cdot
+        (h_{tr\_3} + h_{tr\_em})\right) + \phi_{m\_tot}(t)}} \cdot
+        {{\frac{c_m}{3600} + 0.5 \cdot (h_{tr\_3} + h_{tr\_em})}}
+
+    Building balance t_air :attr:`om.Building.balance_rule_t_air[n, t]`
+        :math::`t_s(t) = \frac{h_{tr\_ms} \cdot \frac{t_{m}(t-1) +
+        t_{m}(t)}{2} + \phi_{st}(t) + h_{tr\_w} \cdot t_e(t) +
+        h_{tr\_1} \cdot \left(t_e(t) + \frac{\phi_{ia}(t) +
+        \phi_{hc\_nd}}{h_{ve}}\right)}{h_{tr\_ms} +
+        h_{tr\_w} + h_{tr\_1}}
+
+        :math: t_{air}(t) = \frac{h_{tr\_is} \cdot t_s(t) +
+        h_{ve} \cdot t_e(t) + \phi_{ia}(t)] + \phi_{i}(p, t) -
+        \phi_{o}(p, t)}{h_{tr\_is} + h_{ve}}
+
+
+    =========================== ======================= =========
+    symbol                      explanation             attribute
+    =========================== ======================= =========
+    :math:`t_{air}(t)`          internal temperature    `t_air`
+    :math:`t_s(t)`              temperature knot s      `No attribute`
+    :math:`t_{m}(t)`            temperature knot m      `t_m_ts`
+    :math:`phi_{m\_tot}(t)`     temperature knot mtot   `No attribute`
+    =========================== ======================= =========
+
+    **The following parts of the objective function are created:**
+    whereby:
+    :math:`DF=(1+dr)` is the discount factor with discount rate :math:`dr`
+
+    """  # noqa: E501
+    CONSTRAINT_GROUP = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _create(self, group=None):
+        m = self.parent_block()
+        if group is None:
+            return None
+
+        i = {n: [i for i in n.inputs][0] for n in group}
+
+        o = {n: [o for o in n.outputs][0] for n in group}
+
+        #  ************* SETS *********************************
+
+        self.BUILDING = Set(initialize=[n for n in group])
+
+        #  ************* VARIABLES *****************************
+
+        def _internal_temperature_bound_rule(block, n, t):
+            """
+            Rule definition for bounds of internal_temperature/t_air variable of
+            storage n in timestep t.
+            """
+            if isinstance(n.t_set_heating, (float, int)):
+                t_set_heating = n.t_set_heating
+            elif isinstance(n.t_set_heating, List):
+                t_set_heating = n.t_set_heating[t]
+            if isinstance(n.t_set_cooling, (float, int)):
+                t_set_cooling = n.t_set_cooling
+            elif isinstance(n.t_set_cooling, List):
+                t_set_cooling = n.t_set_cooling[t]
+            bounds = (
+                t_set_heating,
+                t_set_cooling,
+            )
+            return bounds
+        def _internal_max_temperature_bound_rule(block, n, t):
+            """
+            Rule definition for bounds of internal_temperature/t_air variable of
+            storage n in timestep t.
+            """
+
+            if isinstance(n.t_set_heating_max, (float, int)):
+                t_heater_limit = n.t_set_heating_max
+            elif isinstance(n.t_set_heating_max, List):
+                t_heater_limit = n.t_set_heating_max[t]
+            bounds = (
+                0,
+                t_heater_limit,
+            )
+            return bounds
+        self.t_air = Var(
+            self.BUILDING,
+            m.TIMEPOINTS,
+            bounds=_internal_temperature_bound_rule,
+        )
+        self.t_air_max_heating = Var(
+            self.BUILDING,
+            m.TIMEPOINTS,
+            bounds=_internal_max_temperature_bound_rule,
+        )
+        self.heating_off = Var(
+            self.BUILDING,
+            m.TIMEPOINTS,
+            within=po.Binary,
+            bounds=(0, 1)
+        )
+        self.t_m_ts = Var(self.BUILDING, m.TIMEPOINTS)
+
+        self.phi_m_tot = Var(self.BUILDING, m.TIMEPOINTS)
+
+        # set the initial building temperature
+        for n in group:
+            if n.t_inital is not None:
+                self.t_air[n, 0] = n.t_inital
+                self.t_air[n, 0].fix()
+                self.t_air_max_heating[n, 0] = n.t_inital
+                self.t_air_max_heating[n, 0].fix()
+            if n.t_m_ts is not None:
+                self.t_m_ts[n, 0] = n.t_inital
+                self.t_m_ts[n, 0].fix()
+
+            if n.phi_m_tot is not None:
+                self.phi_m_tot[n, 0] = 0
+                self.phi_m_tot[n, 0].fix()
+
+        def _storage_balance_rule_tm(block, n, p, t):
+            """
+            Rule definition for the building temperature t_m
+            of every storage n and every timestep.
+            """
+            t_m_last_ts = block.t_m_ts[n, t]
+            phi_hc_heat = m.flow[i[n], n, t]
+            phi_hc_cool = m.flow[n, o[n], t]
+            phi_hc_nd = phi_hc_heat - phi_hc_cool
+
+            phi_m_tot = (
+                n.phi_m[t]
+                + n.h_tr_em * n.t_e[t]
+                + (n.h_tr_3 / n.h_tr_2)
+                * (
+                    n.phi_st[t]
+                    + n.h_tr_w * n.t_e[t]
+                    + n.h_tr_1 *
+                    (((n.phi_ia[t] + phi_hc_nd) / n.h_ve) + n.t_e[t])
+                )
+            )
+
+            t_m_current_ts = (
+                t_m_last_ts * ((n.c_m / 3600) - 0.5 * (n.h_tr_3 + n.h_tr_em))
+                + phi_m_tot
+            ) / ((n.c_m / 3600) + 0.5 * (n.h_tr_3 + n.h_tr_em))
+
+            return block.t_m_ts[n, t + 1] == t_m_current_ts
+
+        self.balance_t_m_current_t_s = Constraint(
+            self.BUILDING, m.TIMEINDEX, rule=_storage_balance_rule_tm
+        )
+
+        def _storage_balance_rule_t_air(block, n, p, t):
+            """
+            Rule definition for the building temperature t_air
+            of every storage n and every timestep.
+            """
+            phi_hc_heat = m.flow[i[n], n, t]
+            phi_hc_cool = m.flow[n, o[n], t]
+            phi_hc_nd = phi_hc_heat - phi_hc_cool
+            t_m_last_ts = block.t_m_ts[n, t]
+            t_m_current_ts = block.t_m_ts[n, t + 1]
+            t_m = (t_m_last_ts + t_m_current_ts) / 2
+
+            t_s = (
+                n.h_tr_ms * t_m
+                + n.phi_st[t]
+                + n.h_tr_w * n.t_e[t]
+                + n.h_tr_1 * (n.t_e[t] + (n.phi_ia[t] + phi_hc_nd) / n.h_ve)
+            ) / (n.h_tr_ms + n.h_tr_w + n.h_tr_1)
+            t_air = (n.h_tr_is * t_s + n.h_ve * n.t_e[t] + n.phi_ia[t] + phi_hc_nd) / (
+                n.h_tr_is + n.h_ve
+            )
+            return block.t_air[n, t + 1] == t_air
+
+        self.balance_t_air = Constraint(
+            self.BUILDING, m.TIMEINDEX, rule=_storage_balance_rule_t_air
+        )
+
+        def _storage_balance_rule_t_air_max_heating(block, n, p, t):
+            """
+            Rule definition for the building temperature t_air_max_heating
+            of every storage n and every timestep.
+            """
+            phi_hc_heat = m.flow[i[n], n, t]
+            phi_hc_cool = m.flow[n, o[n], t]
+            phi_hc_nd = phi_hc_heat - phi_hc_cool
+            t_m_last_ts = block.t_m_ts[n, t]
+            t_m_current_ts = block.t_m_ts[n, t + 1]
+            t_m = (t_m_last_ts + t_m_current_ts) / 2
+
+            t_s = (
+                n.h_tr_ms * t_m
+                + n.phi_st[t]
+                + n.h_tr_w * n.t_e[t]
+                + n.h_tr_1 * (n.t_e[t] + (n.phi_ia[t] + phi_hc_nd) / n.h_ve)
+            ) / (n.h_tr_ms + n.h_tr_w + n.h_tr_1)
+            t_air = (n.h_tr_is * t_s + n.h_ve * n.t_e[t] + n.phi_ia[t] + phi_hc_nd) / (
+                n.h_tr_is + n.h_ve
+            )
+            return block.t_air_max_heating[n, t + 1] == t_air - \
+                   (11) * block.heating_off[n, t]
+
+        self.balance_t_air_with_heating = Constraint(
+            self.BUILDING, m.TIMEINDEX, rule=_storage_balance_rule_t_air_max_heating
+        )
+
+        def _max_heating_into_building(block, n, p, t):
+            """
+            Rule definition for the maximum heating power into
+            of every storage n and every timestep.
+            """
+            return m.flow[i[n], n, t] / n.max_power_heating <= \
+                   (1 - block.heating_off[n, t] )
+
+        self.max_heating_into_building = Constraint(
+            self.BUILDING, m.TIMEINDEX, rule=_max_heating_into_building
+        )
+        def _max_cooling_into_building(block, n, p, t):
+            """
+            Rule definition for the maximum cooling power into
+            of every storage n and every timestep.
+            """
+            return m.flow[n, o[n], t] / n.max_power_cooling <= 1
+
+        self.max_cooling_into_building = Constraint(
+            self.BUILDING, m.TIMEINDEX, rule=_max_cooling_into_building
+        )
+    def _objective_expression(self):
+        r"""
+        Objective expression for BUILDING with no investment.
+        Note: This adds nothing as variable costs are already
+        added in the Block :class:`SimpleFlowBlock`.
+        """
+        if not hasattr(self, "BUILDING"):
+            return 0
+
+        return 0
+'''
