@@ -2,11 +2,12 @@ import os
 import pprint as pp
 import logging
 from matplotlib import pyplot as plt
+import pandas as pd
 
-from oemof.thermal_building_model.helpers.path_helper import get_project_root
-from oemof.thermal_building_model.helpers import calculate_gain_by_sun
-from oemof.thermal_building_model.tabula.tabula_reader import Building
-from oemof.thermal_building_model.m_5RC import M5RC
+from thermal_building_model.helpers.path_helper import get_project_root
+from thermal_building_model.helpers import calculate_gain_by_sun
+from thermal_building_model.tabula.tabula_reader import Building
+from thermal_building_model.m_5RC import M5RC
 
 import oemof.solph as solph
 from oemof.solph import views
@@ -35,17 +36,23 @@ __license__ = "MIT"
 
 def main():
     #  create solver
-    solver = "cbc"  # 'glpk', 'gurobi',....
-    solver_verbose = False  # show/hide solver output
+    solver = "gurobi"  # 'glpk', 'gurobi',....
     number_of_time_steps = 8760
     main_path = get_project_root()
-    building_example = None
 
+    pv_data = pd.read_csv(
+        os.path.join(
+            main_path,
+            "thermal_building_model",
+            "input",
+            "sfh_example",
+            "pvwatts_hourly_1kW.csv",
+        )
+    )
     # Generates 5RC Building-Model
     building_example = Building(
         country="DE",
         construction_year=1980,
-        floor_area=200,
         class_building="average",
         building_type="SFH",
         refurbishment_status="no_refurbishment",
@@ -63,15 +70,20 @@ def main():
             "12_BW_Mannheim_TRY2035.csv",
         ),
     )
-    solar_gains = building_example.calc_solar_gaings_through_windows(
-        object_location_of_building=location
-    )
     t_outside = location.weather_data["drybulb_C"].to_list()
+    solar_gains = building_example.calc_solar_gaings_through_windows(
+        object_location_of_building=location,
+        t_outside=t_outside
+    )
 
     # Internal gains of residents, machines (f.e. fridge, computer,...) and lights have to be added manually
     internal_gains = []
-    for _ in range(number_of_time_steps):
-        internal_gains.append(0)
+    t_set_heating = []
+    t_set_cooling = []
+    for _ in range(number_of_time_steps + 1):
+        internal_gains.append(3446 * 1000 /8760)
+        t_set_heating.append(20)
+        t_set_cooling.append(60)
 
     # initiate the logger (see the API docs for more information)
     logger.define_logging(
@@ -104,15 +116,14 @@ def main():
     es.add(
         solph.components.Sink(
             label="elect_into_grid",
-            inputs={b_elect: solph.flows.Flow(variable_costs=10)},
+            inputs={b_elect: solph.flows.Flow(variable_costs=-0.001)},
         )
     )
-
     es.add(
         solph.components.Transformer(
             label="ElectricalHeater",
             inputs={b_elect: solph.flows.Flow()},
-            outputs={b_heat: solph.flows.Flow(nominal_value=10000)},
+            outputs={b_heat: solph.flows.Flow(nominal_value=20000)},
             conversion_factors={b_elect: 1},
         )
     )
@@ -120,24 +131,33 @@ def main():
         solph.components.Transformer(
             label="ElectricalCooler",
             inputs={
-                b_cool: solph.flows.Flow(nominal_value=10000),
+                b_cool: solph.flows.Flow(nominal_value=20000),
                 b_elect: solph.flows.Flow(),
             },
             outputs={},
-            conversion_factors={b_cool: 1, b_elect: 1},
+            conversion_factors={b_cool: 0.9, b_elect: 1},
         )
     )
+
+    es.add(solph.components.Source(
+        label="pv",
+        outputs={
+            b_elect: solph.Flow(
+                fix=pv_data["AC System Output (W)"],
+                nominal_value= 1000000
+                ),}
+            ))
 
     es.add(
         M5RC(
             label="GenericBuilding",
             inputs={b_heat: solph.flows.Flow(variable_costs=0)},
-            outputs={b_cool: solph.flows.Flow(variable_costs=0)},
+            outputs={b_cool: solph.flows.Flow(variable_costs=5)},
             solar_gains=solar_gains,
             t_outside=t_outside,
             internal_gains=internal_gains,
-            t_set_heating=20,
-            t_set_cooling=30,
+            t_set_heating=t_set_heating,
+            t_set_cooling=t_set_cooling,
             building_config=building_example.building_config,
             t_inital=20,
         )
@@ -154,7 +174,7 @@ def main():
 
     # if tee_switch is true solver messages will be displayed
     logging.info("Solve the optimization problem")
-    model.solve(solver=solver, solve_kwargs={"tee": solver_verbose})
+    model.solve(solver=solver)
 
     logging.info("Store the energy system with the results.")
 
@@ -165,8 +185,15 @@ def main():
     es.results["main"] = solph.processing.results(model)
     es.results["meta"] = solph.processing.meta_results(model)
     results = es.results["main"]
-    custom_building = views.node(results, "GenericBuilding")
 
+
+    custom_building = views.node(results, "GenericBuilding")
+    heating_demand = custom_building["sequences"][(("b_heat", "GenericBuilding"), "flow")].sum()
+    floor_area = building_example.floor_area
+    relative_heating_demand= heating_demand / floor_area
+    print("annual heating demand in kWh/m^2: "+str(relative_heating_demand/1000))
+    plt.plot(t_outside)
+    plt.show()
     fig, ax = plt.subplots(figsize=(10, 5))
     custom_building["sequences"][(("GenericBuilding", "None"), "t_air")].plot(
         ax=ax, kind="line", drawstyle="steps-post"
