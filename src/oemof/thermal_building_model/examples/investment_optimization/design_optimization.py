@@ -5,17 +5,17 @@ import logging
 import pandas as pd
 import pickle
 
-from oemof.thermal_building_model.tabula.tabula_reader import Building
-from oemof.thermal_building_model.helpers.path_helper import get_project_root
-from oemof.thermal_building_model.helpers import calculate_gain_by_sun
+from thermal_building_model.tabula.tabula_reader import Building
+from thermal_building_model.helpers.path_helper import get_project_root
+from thermal_building_model.helpers import calculate_gain_by_sun
 
 import oemof.solph as solph
 from oemof.solph import views
 from oemof.tools import logger
 from oemof.tools import economics
-from oemof.thermal_building_model.m_5RC import M5RC
+from thermal_building_model.m_5RC import M5RC
 from plot_results import plot_stacked_bars
-
+from oemof.solph import constraints
 """
 General description
 -------------------
@@ -39,7 +39,7 @@ __license__ = "MIT"
 
 def main(refurbishment_status, cost_refurbishment):
     #  create solver
-    solver = "cbc"  # 'glpk', 'gurobi',....
+    solver = "gurobi"  # 'glpk', 'gurobi',....
     number_of_time_steps = 8760
     main_path = get_project_root()
 
@@ -63,8 +63,11 @@ def main(refurbishment_status, cost_refurbishment):
             "12_BW_Mannheim_TRY2035.csv",
         ),
     )
+    t_outside = location.weather_data["drybulb_C"].to_list()
+
     solar_gains = building_example.calc_solar_gaings_through_windows(
-        object_location_of_building=location
+        object_location_of_building=location,
+        t_outside=t_outside
     )
 
     # Pre-Calculation of solar gains with weather_data and building_data
@@ -79,7 +82,6 @@ def main(refurbishment_status, cost_refurbishment):
             "pvwatts_hourly_1kW.csv",
         )
     )
-    t_outside = location.weather_data["drybulb_C"].to_list()
     # Elect Demand
     df_elect = pd.read_csv(
         os.path.join(
@@ -335,7 +337,8 @@ def main(refurbishment_status, cost_refurbishment):
 
     # initialise the operational model
     model = solph.Model(es)
-
+    # add the emission constraint
+    constraints.emission_limit(model, limit=100)
     # if tee_switch is true solver messages will be displayed
     logging.info("Solve the optimization problem")
     model.solve(solver=solver, solve_kwargs={"tee": True})
