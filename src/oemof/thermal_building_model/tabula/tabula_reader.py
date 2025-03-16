@@ -4,10 +4,11 @@ SPDX-FileCopyrightText: Maximilian Hillen <maximilian.hillen@dlr.de>
 
 """
 import pandas as pd
-from oemof.thermal_building_model.helpers.path_helper import get_project_root
-from oemof.thermal_building_model.helpers.calculate_gain_by_sun import Window
+from thermal_building_model.helpers.path_helper import get_project_root
+from thermal_building_model.helpers.calculate_gain_by_sun import Window
 import os
 import warnings
+import math
 from dataclasses import dataclass, field, fields
 
 
@@ -31,7 +32,7 @@ class BuildingConfig5RC:
     h_tr_ms : numeric
         Value which describes the transmittance from the internal air to the thermal mass in W/K.
     c_m : numeric
-        Value of room capacitance in kWh/K
+        Value of room capacitance in J/K
     floor_area : numeric
         Value of the floor area in m2.
     heat_transfer_coefficient_ventilation : numeric
@@ -123,7 +124,7 @@ class Building:
         number_of_time_steps: float,
         tabula_building_code: str = None,
         country: str = None,
-        class_building: str = "average",
+        class_building: str = "heavy",
         building_type: str = None,
         refurbishment_status="no_refurbishment",
         construction_year: int = None,
@@ -181,7 +182,10 @@ class Building:
             "very heavy": {"a_m_var": 3.0, "c_m_var": 370000},
         }
         self.building_config = {}
-
+        if self.building_parameters is not None:
+            self.initialize_from_building_parameters()
+        else:
+            self.get_building_parameters_from_csv()
     def define_tabula_building_code(
         self,
         country: str,
@@ -229,10 +233,6 @@ class Building:
         return self.tabula_df["Code_BuildingVariant"]
 
     def calculate_all_parameters(self):
-        if self.building_parameters is not None:
-            self.initialize_from_building_parameters()
-        else:
-            self.get_building_parameters_from_csv()
         self.total_internal_area: float = self.calc_internal_area()
         self.h_ve: float = self.calc_h_ve()
         self.h_tr_w: float = self.calc_h_tr_w()
@@ -275,13 +275,13 @@ class Building:
         self.opaque_elements = ["wall", "roof", "floor"]
 
         self.floor_area_reference = float(row["A_C_Ref"].values[0])
-        self.calc_floor_area_ratio()
+        self.calc_area_ratio()
         self.a_roof = {
             "a_roof_1": float(row["A_Roof_1"].values[0]),
             "a_roof_2": float(row["A_Roof_2"].values[0]),
         }
         self.a_roof = {
-            key: value * self.floor_area_ratio for key, value in self.a_roof.items()
+            key: value * self.floor_roof_area_ratio for key, value in self.a_roof.items()
         }
         self.u_roof = {
             "u_roof_1": float(row["U_" + str(t_b) + "Roof_1"].values[0]),
@@ -296,7 +296,7 @@ class Building:
             "a_floor_2": float(row["A_Floor_2"].values[0]),
         }
         self.a_floor = {
-            key: value * self.floor_area_ratio for key, value in self.a_floor.items()
+            key: value * self.floor_roof_area_ratio for key, value in self.a_floor.items()
         }
         self.u_floor = {
             "u_floor_1": float(row["U_" + str(t_b) + "Floor_1"].values[0]),
@@ -313,7 +313,7 @@ class Building:
             "a_wall_3": float(row["A_Wall_3"].values[0]),
         }
         self.a_wall = {
-            key: value * self.floor_area_ratio for key, value in self.a_wall.items()
+            key: value * self.wall_window_area_ratio for key, value in self.a_wall.items()
         }
         self.u_wall = {
             "u_wall_1": float(row["U_" + str(t_b) + "Wall_1"].values[0]),
@@ -328,7 +328,7 @@ class Building:
 
         self.a_door = {"a_door_1": float(row["A_Door_1"].values[0])}
         self.a_door = {
-            key: value * self.floor_area_ratio for key, value in self.a_door.items()
+            key: value * self.wall_window_area_ratio for key, value in self.a_door.items()
         }
 
         self.u_door = {"u_door_1": float(
@@ -339,7 +339,7 @@ class Building:
             "a_window_2": float(row["A_Window_2"].values[0]),
         }
         self.a_window = {
-            key: value * self.floor_area_ratio for key, value in self.a_window.items()
+            key: value * self.wall_window_area_ratio for key, value in self.a_window.items()
         }
         self.a_window_specific = {
             "a_window_horizontal": float(row["A_Window_Horizontal"].values[0]),
@@ -349,7 +349,7 @@ class Building:
             "a_window_north": float(row["A_Window_North"].values[0]),
         }
         self.a_window_specific = {
-            key: value * self.floor_area_ratio
+            key: value * self.wall_window_area_ratio
             for key, value in self.a_window_specific.items()
         }
         self.delta_u_thermal_bridiging = {
@@ -363,6 +363,9 @@ class Building:
             "g_gl_n_window_1": float(row["g_gl_n_Window_1"].values[0]),
             "g_gl_n_window_2": float(row["g_gl_n_Window_2"].values[0]),
         }
+        self.radiation_non_perpendicular_to_the_glazing = float(row["F_w"].values[0])
+
+        self.frame_area_fraction_of_window = float(row["F_f"].values[0])
 
         self.heat_transfer_coefficient_ventilation = float(
             row["h_Ventilation"].values[0]
@@ -395,32 +398,41 @@ class Building:
         self.h_ventilation = float(
             row["h_Ventilation"] * self.floor_area)  # [W/K]
 
-    def calc_floor_area_ratio(self):
+    def calc_area_ratio(self):
         if self.floor_area is None:
             self.floor_area = self.floor_area_reference
-            self.floor_area_ratio = 1
+            self.floor_roof_area_ratio = 1
+            self.wall_window_area_ratio = 1
         else:
             warnings.warn(
                 "Experimental mode: The floor area is unequeal"
                 "to the tabula reference floor area",
                 UserWarning,
             )
-            self.floor_area_ratio = self.floor_area / self.floor_area_reference
-            if self.floor_area_ratio > 1:
+            self.floor_roof_area_ratio = self.floor_area / self.floor_area_reference
+            # assuming the building is always a cubric:
+            self.wall_window_area_ratio = math.sqrt(self.floor_area) / math.sqrt(self.floor_area_reference)
+            if self.floor_roof_area_ratio > 1:
                 print(
-                    "The chosen floor is "
-                    + str(round((1 - self.floor_area_ratio) * 100, 3))
+                    "The chosen floor and roof is "
+                    + str(round((1 - self.floor_roof_area_ratio) * 100, 3))
+                    + " % and "
+                    "The chosen window and wall is "
+                    + str(round((1 - self.wall_window_area_ratio) * 100, 3))
                     + " % "
                     "bigger than the tabula reference floor area"
                 )
-            elif self.floor_area_ratio < 1:
+            elif self.floor_roof_area_ratio < 1:
                 print(
-                    "The chosen floor is "
-                    + str(round((1 - self.floor_area_ratio) * 100, 3))
+                    "The chosen floor and roof is "
+                    + str(round((1 - self.floor_roof_area_ratio) * 100, 3))
+                    + " % and "
+                    "The chosen window and wall is "
+                    + str(round((1 - self.wall_window_area_ratio) * 100, 3))
                     + " % "
                     "smaller than the tabula reference floor area"
                 )
-            if 0.9 > self.floor_area_ratio or 1.1 < self.floor_area_ratio:
+            if 0.9 > self.floor_roof_area_ratio or 1.1 < self.floor_roof_area_ratio:
                 warnings.warn(
                     "The chosen floor area is more than 10 % different to the "
                     "associated tabula building. It might influence "
@@ -472,6 +484,8 @@ class Building:
                               str(x)] * self.u_door["u_door_" + str(x)]
             )
             a_external = a_external + self.a_door["a_door_" + str(x)]
+        for x in range(1, len(self.a_window) + 1):
+            a_external = a_external + self.a_window["a_window_" + str(x)]
         h_tr_em = (
             h_tr_em
             + self.delta_u_thermal_bridiging["delta_u_thermal_bridiging"] * a_external
@@ -487,7 +501,7 @@ class Building:
                 + self.a_window["a_window_" + str(x)]
                 * self.u_window["u_window_" + str(x)]
             )
-            a_window = a_window * self.a_window["a_window_" + str(x)]
+            a_window = a_window + self.a_window["a_window_" + str(x)]
         h_tr_w = (
             h_tr_w
             + self.delta_u_thermal_bridiging["delta_u_thermal_bridiging"] * a_window
@@ -529,7 +543,7 @@ class Building:
             self.list_class_buildig[self.class_building]["c_m_var"]
         return c_m
 
-    def calc_solar_gaings_through_windows(self, object_location_of_building):
+    def calc_solar_gaings_through_windows(self, object_location_of_building,t_outside):
         a_window_total = 0
         g_gl_n_window_avg = 0
         for x in range(1, len(self.u_window) + 1):
@@ -554,18 +568,20 @@ class Building:
             "horizontal": {"azimuth_tilt": 0, "alititude_tilt": 0},
         }
         list_solar_gains = []
+        (
+            altitude,
+            azimuth,
+            apparent_zenith
+        ) = object_location_of_building.calc_sun_position_pv_lib(
+            latitude_deg=object_location_of_building.weather_data_latitude_and_longitude['latitude'],
+            longitude_deg=object_location_of_building.weather_data_latitude_and_longitude['longitude'],
+            index=object_location_of_building.weather_data['dirnorrad_Whm2'].index
+        )
         for hour in range(self.number_of_time_steps):
+            shading_factor=0
             sum_solar_gains = 0
             for x in compass_directions:
-                (
-                    altitude,
-                    azimuth,
-                ) = object_location_of_building.calc_sun_position(
-                    latitude_deg=48.16,
-                    longitude_deg=46.38,
-                    year=2015,
-                    hoy=hour,
-                )
+
                 azimuth_tilt = compass_directions[x]["azimuth_tilt"]
                 alititude_tilt = compass_directions[x]["alititude_tilt"]
                 window_var = Window(
@@ -574,20 +590,29 @@ class Building:
                     glass_solar_transmittance=g_gl_n_window_avg,
                     glass_light_transmittance=0.8,
                     area=self.a_window_specific["a_window_" + str(x)],
-                )
-
-                window_var.calc_solar_gains(
                     sun_altitude=altitude,
                     sun_azimuth=azimuth,
-                    normal_direct_radiation=object_location_of_building.weather_data[
-                        "dirnorrad_Whm2"
-                    ][hour],
-                    horizontal_diffuse_radiation=object_location_of_building.weather_data[
-                        "difhorrad_Whm2"
-                    ][
-                        hour
-                    ],
+                    reduction_factor=(1 - shading_factor) * \
+                                     (1 - self.frame_area_fraction_of_window) *
+                                     self.radiation_non_perpendicular_to_the_glazing
                 )
-                sum_solar_gains = window_var.solar_gains + sum_solar_gains
+                solar_gains = window_var.calc_solar_heat_gains_by_pv(
+                    direct_normal_irradiance = object_location_of_building.weather_data[
+                        "dirnorrad_Whm2"
+                    ],
+                    direct_horizontal_irradiance = object_location_of_building.weather_data[
+                        "difhorrad_Whm2"
+                    ],
+                    direct_normal_irradiance_extra=object_location_of_building.weather_data[
+                        "extdirrad_Whm2"
+                    ],
+                    global_horizontal_irradiance = object_location_of_building.weather_data[
+                        "glohorrad_Whm2"
+                    ],
+                    apparent_zenith = apparent_zenith,
+                    hour = hour)
+
+
+                sum_solar_gains = sum_solar_gains + solar_gains
             list_solar_gains.append(sum_solar_gains)
         return list_solar_gains
