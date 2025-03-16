@@ -12,7 +12,7 @@ def read(fname):
     return open(os.path.join(os.path.dirname(__file__), fname)).read()
 
 setup(
-    name="oemof.thermal-building-model",
+    name="oemof.thermal_building_model",
     version="0.0.1.dev",
     author="oemof developer group",
     author_email="contact@oemof.org",

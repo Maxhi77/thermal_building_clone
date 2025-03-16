@@ -3,7 +3,7 @@ from oemof import solph
 
 from oemof.tools import economics
 from typing import Optional, Union, List
-from thermal_building_model.oemof_facades.base_component import CO2Components, EconomicsInvestmentComponents
+from oemof.thermal_building_model.oemof_facades.base_component import CO2Components, EconomicsInvestmentComponents
 from dataclasses import dataclass, field
 
 '''

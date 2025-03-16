@@ -1,4 +1,4 @@
-from thermal_building_model.oemof_facades.base_component import BaseComponent, EconomicsInvestmentComponents, CO2Components
+from oemof.thermal_building_model.oemof_facades.base_component import BaseComponent, EconomicsInvestmentComponents, CO2Components
 from typing import Optional, Union, List
 from oemof import solph
 from dataclasses import dataclass

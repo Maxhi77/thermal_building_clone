@@ -2,9 +2,9 @@ from dataclasses import dataclass
 from oemof import solph
 from oemof.tools import economics
 from typing import Optional, Union, List
-from thermal_building_model.oemof_facades.base_component import  EconomicsInvestmentComponents, CO2Components
+from oemof.thermal_building_model.oemof_facades.base_component import  EconomicsInvestmentComponents, CO2Components
 from dataclasses import dataclass, field
-from thermal_building_model.oemof_facades.base_component import BaseComponent
+from oemof.thermal_building_model.oemof_facades.base_component import BaseComponent
 
 '''
 CO2 in kg/kWh
