@@ -4,8 +4,8 @@ SPDX-FileCopyrightText: Maximilian Hillen <maximilian.hillen@dlr.de>
 
 """
 import pandas as pd
-from thermal_building_model.helpers.path_helper import get_project_root
-from thermal_building_model.helpers.calculate_gain_by_sun import Window
+from oemof.thermal_building_model.helpers.path_helper import get_project_root
+from oemof.thermal_building_model.helpers.calculate_gain_by_sun import Window
 import os
 import warnings
 import math
@@ -131,6 +131,7 @@ class Building:
         floor_area: float = None,
         building_parameters: BuildingParameters = None,
     ):
+        self.refurbishment_status = refurbishment_status
         if building_parameters is not None:
             print(
                 "You entered the Expert mode, by using a defining your own " "building"
@@ -224,12 +225,16 @@ class Building:
                 self.tabula_df["Number_BuildingVariant"]
                 == variant_mapping[refurbishment_status]
             ]
-
-        assert len(self.tabula_df) <= 1, (
-            "More than one building is founded for "
-            "the input parameters. Please write an "
-            "issue in Github"
-        )
+            assert len(self.tabula_df) <= 1, (
+                "More than one building is founded for "
+                "the input parameters. Please write an "
+                "issue in Github"
+            )
+        elif refurbishment_status == "GEG_standard":
+            self.tabula_df = self.tabula_df[
+                self.tabula_df["Number_BuildingVariant"]
+                == 3
+                ]
         return self.tabula_df["Code_BuildingVariant"]
 
     def calculate_all_parameters(self):
@@ -397,7 +402,25 @@ class Building:
             row["h_Transmission"] * self.floor_area)  # [W/K]
         self.h_ventilation = float(
             row["h_Ventilation"] * self.floor_area)  # [W/K]
+        if self.refurbishment_status == "GEG_standard":
+            self.adjust_U_values_to_GEG()
+    def adjust_U_values_to_GEG(self):
+        GEG_U_VALUES = {
+            "door": 1.8,
+            "roof": 0.2,
+            "wall": 0.24,
+            "floor": 0.3,
+            "window": 1.3
+        }
+        self.u_door = self.update_u_values(self.u_door, GEG_U_VALUES["door"])
+        self.u_roof = self.update_u_values(self.u_roof, GEG_U_VALUES["roof"])
+        self.u_wall = self.update_u_values(self.u_wall, GEG_U_VALUES["wall"])
+        self.u_floor = self.update_u_values(self.u_floor, GEG_U_VALUES["floor"])
+        self.u_window = self.update_u_values(self.u_window, GEG_U_VALUES["window"])
 
+    def update_u_values(u_dict, max_u_value):
+        """Updates the U-values in the dictionary """
+        return {key: min(value, max_u_value) for key, value in u_dict.items()}
     def calc_area_ratio(self):
         if self.floor_area is None:
             self.floor_area = self.floor_area_reference
