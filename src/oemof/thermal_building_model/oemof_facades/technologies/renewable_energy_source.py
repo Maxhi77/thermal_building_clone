@@ -1,12 +1,14 @@
 from oemof.thermal_building_model.oemof_facades.base_component import BaseComponent, EconomicsInvestmentComponents, CO2Components
-from typing import Optional, Union, List
+from typing import Optional, List
 from oemof import solph
-from dataclasses import dataclass
 from oemof.network import Bus
 from oemof.thermal_building_model.helpers.path_helper import get_project_root
 import pandas as pd
 import os
+from dataclasses import dataclass, field
 
+from oemof.thermal_building_model.input.economics.investment_components import pv_system_config
+from oemof.thermal_building_model.input.emissions.co2_components import pv_system_co2
 @dataclass
 class RenewableEnergySource(BaseComponent):
     timesteps : float = 3
@@ -51,16 +53,17 @@ class RenewableEnergySource(BaseComponent):
 class PVSystem(RenewableEnergySource):
     name: str = "PVSystem"
     nominal_power: Optional[float] = 1000
-
+    co2_model: CO2Components = field(default_factory=lambda: pv_system_co2)
+    economics_model: EconomicsInvestmentComponents = field(default_factory=lambda: pv_system_config)
     def __post_init__(self):
-        main_path = get_project_root()
-        self.fixed_data = pd.read_csv(
-            os.path.join(
-                main_path,
-                "thermal_building_model",
-                "input",
-                "sfh_example",
-                "pvwatts_hourly_1kW.csv",
-            )
-        )["AC System Output (W)"][12:(12+self.timesteps)]
-        self.fixed_data = [0,20,0]
+        if self.fixed_data is None:
+            main_path = get_project_root()
+            self.fixed_data = pd.read_csv(
+                os.path.join(
+                    main_path,
+                    "thermal_building_model",
+                    "input",
+                    "sfh_example",
+                    "pvwatts_hourly_1kW.csv",
+                )
+            )["AC System Output (W)"]
