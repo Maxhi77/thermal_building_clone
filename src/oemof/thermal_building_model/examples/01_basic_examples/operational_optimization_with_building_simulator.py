@@ -4,15 +4,15 @@ import logging
 from matplotlib import pyplot as plt
 import pandas as pd
 
-from thermal_building_model.helpers.path_helper import get_project_root
-from thermal_building_model.helpers import calculate_gain_by_sun
-from thermal_building_model.tabula.tabula_reader import Building
-from thermal_building_model.m_5RC import M5RC
-from thermal_building_model.helpers.building_heat_demand_simulation import HeatDemand_Simulation_5RC
+from oemof.thermal_building_model.helpers.path_helper import get_project_root
+from oemof.thermal_building_model.helpers import calculate_gain_by_sun
+from oemof.thermal_building_model.tabula.tabula_reader import Building
+from oemof.thermal_building_model.m_5RC import M5RC
+from oemof.thermal_building_model.helpers.building_heat_demand_simulation import HeatDemand_Simulation_5RC
 import oemof.solph as solph
 from oemof.solph import views
 from oemof.tools import logger
-from thermal_building_model.helpers.post_processing import calc_excess_temperature_degree_hours
+from oemof.thermal_building_model.helpers.post_processing import calc_excess_temperature_degree_hours
 """
 General description
 -------------------
