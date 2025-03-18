@@ -1,6 +1,7 @@
 from typing import List
 import warnings
-from thermal_building_model.m_5RC import M5RC
+from oemof.thermal_building_model.m_5RC import M5RC
+
 class HeatDemand_Simulation_5RC():
     r"""
     This class simulates the heating and cooling demand of a 5RC thermal
