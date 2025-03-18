@@ -1,19 +1,20 @@
 from oemof.thermal_building_model.oemof_facades.base_component import BaseComponent, EconomicsInvestmentComponents, CO2Components
-from typing import Optional, Union, List
+from typing import Optional
 from oemof import solph
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from oemof.network import Bus
-
+from oemof.thermal_building_model.input.emissions.co2_components import battery_co2,hot_water_tank_co2
+from oemof.thermal_building_model.input.economics.investment_components import battery_config,hot_water_tank_config
 
 @dataclass
 class Storage(BaseComponent):
     nominal_capacity: Optional[float] = None
     charging_capacity_rate: Optional[float] = None
     discharging_capacity_rate: Optional[float] = None
-    balanced : bool = False
+    balanced : bool = True
     loss_rate: Optional[float] = None
     min_storage_level: Optional[float] = None
-    initial_storage_level: Optional[float] = None
+    initial_storage_level: Optional[float] = 0
     charging_efficiency: Optional[float] = None
     discharging_efficiency: Optional[float] = None
     economics_model: Optional[EconomicsInvestmentComponents] = None
@@ -82,27 +83,36 @@ class HotWaterTank(Storage):
     # ambient_temperature: [dict[str, float], None] = None
     u_value: Optional[float] = 1.2
     min_storage_level:float = 0
-    max_temperature: float = 95
-    min_temperature: float = 15
+    max_temperature: Optional[float] = None
+    min_temperature: Optional[float] = None
     diameter: float = 0.5
-    volume_in_m3: Optional[None] = 1000.0
-    co2_per_unit = 0.2695
+    volume_in_m3 : float  = 100
+    economics_model: EconomicsInvestmentComponents = field(default_factory=lambda:hot_water_tank_config)
+    co2_model: CO2Components = field(default_factory=lambda:hot_water_tank_co2)
+    # capacity is m^3
     def __post_init__(self):
-        self.bus_from_storage = solph.buses.Bus(label=f"b_{self.name.lower()}_from_storage")
-        self.bus_into_storage = solph.buses.Bus(label=f"b_{self.name.lower()}_into_storage")
-        if True:
-            self.storage_volumen_in_Wh_per_kg = 4.186 * 1000 / 3600 # [Wh/K kg]
-            self.qubick_meter_water_in_kg = 992.2  # [kg/m^3]
-            if self.volume_in_m3:
-                self.nominal_capacity = self.storage_capacity_at_temperature_per_volume(temperature=max(self.temperature_buses)) * self.volume_in_m3
-            else:
-                self.nominal_capacity = None
-            if self.investment:
-                self.economics_model = EconomicsInvestmentComponents(maximum_capacity=1000 * self.storage_capacity_at_temperature_per_volume(temperature=max(self.temperature_buses)),
-                                                                     cost_per_unit=1200 * self.storage_capacity_at_temperature_per_volume(temperature=max(self.temperature_buses)),
-                                                                     lifetime=20,
-                                                                     cost_offset=10)
+        self.storage_volumen_in_Wh_per_kg = 4.186 * 1000 / 3600 # [Wh/K kg]
+        self.qubick_meter_water_in_kg = 992.2  # [kg/m^3]
 
+        if self.volume_in_m3:
+            self.nominal_capacity = (self.storage_capacity_at_temperature_per_volume(temperature=self.max_temperature)) * self.volume_in_m3
+        else:
+            self.nominal_capacity = None
+        if self.investment:
+            self.economics_model.maximum_capacity *= (
+                self.storage_capacity_at_temperature_per_volume(temperature=self.max_temperature)
+                * self.storage_volumen_in_Wh_per_kg
+                * self.qubick_meter_water_in_kg
+            )
+            self.economics_model.cost_per_unit /= (
+                self.qubick_meter_water_in_kg / self.storage_volumen_in_Wh_per_kg
+            )
+    def generate_bus_from_storage(self):
+        self.bus_from_storage = solph.buses.Bus(label=f"b_{self.name.lower()}_from_storage")
+        return self.get_bus_from_storage()
+    def generate_storage_into_bus(self):
+        self.bus_into_storage = solph.buses.Bus(label=f"b_{self.name.lower()}_into_storage")
+        return self.get_bus_into_storage()
     def get_bus_from_storage(self):
         return self.bus_from_storage
     def get_bus_into_storage(self):
@@ -110,10 +120,10 @@ class HotWaterTank(Storage):
     def get_temperature_buses(self):
         return self.temperature_buses
     def storage_capacity_at_temperature_per_volume(self,temperature:float):
-        return self.volume_in_m3 * self.qubick_meter_water_in_kg * self.storage_volumen_in_Wh_per_kg * (temperature -  min(self.temperature_buses))
+        return self.volume_in_m3 * self.qubick_meter_water_in_kg * self.storage_volumen_in_Wh_per_kg * (temperature -  self.min_temperature)
 
     def get_relative_storage_level_at_temperature(self, temperature:float):
-        return self.storage_capacity_at_temperature_per_volume(temperature) / self.storage_capacity_at_temperature_per_volume(max(self.temperature_buses))
+        return self.storage_capacity_at_temperature_per_volume(temperature) / self.storage_capacity_at_temperature_per_volume(self.max_temperature)
 
 @dataclass
 class Battery(Storage):
@@ -127,13 +137,8 @@ class Battery(Storage):
     initial_storage_level: float = 0.0
     initial_soc: float = 0.5
     min_storage_level: float = 0
+    economics_model: EconomicsInvestmentComponents = field(default_factory=lambda:battery_config)
+    co2_model: CO2Components = field(default_factory=lambda:battery_co2)
 
-    def __post_init__(self):
-        if self.investment:
-            self.economics_model = EconomicsInvestmentComponents(maximum_capacity=1000,
-                                                            cost_per_unit=0.13,
-                                                            lifetime=20,
-                                                            cost_offset=10)
-            co2_model: Optional[CO2Components] = None
 
 
