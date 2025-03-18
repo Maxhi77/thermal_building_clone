@@ -4,10 +4,10 @@ import logging
 from matplotlib import pyplot as plt
 import pandas as pd
 
-from thermal_building_model.helpers.path_helper import get_project_root
-from thermal_building_model.helpers import calculate_gain_by_sun
-from thermal_building_model.tabula.tabula_reader import Building
-from thermal_building_model.m_5RC import M5RC
+from oemof.thermal_building_model.helpers.path_helper import get_project_root
+from oemof.thermal_building_model.helpers import calculate_gain_by_sun
+from oemof.thermal_building_model.tabula.tabula_reader import Building
+from oemof.thermal_building_model.m_5RC import M5RC
 
 import oemof.solph as solph
 from oemof.solph import views
@@ -55,7 +55,7 @@ def main():
         construction_year=1980,
         class_building="average",
         building_type="SFH",
-        refurbishment_status="no_refurbishment",
+        refurbishment_status="GEG",
         number_of_time_steps=number_of_time_steps,
     )
     building_example.calculate_all_parameters()
