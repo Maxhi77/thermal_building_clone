@@ -22,14 +22,14 @@ class Converter(BaseComponent):
     co2_model: Optional[CO2Components] = None
 
     def create_source(self,
-                      heat_pump_bus: Bus):
+                      output_bus: Bus):
         """Creates a solph source with working_rate as variable cost and demand_rate added."""
         if self.investment:
             epc = self.economics_model.calculate_epc()  # Get EPC from economics model
 
             return solph.components.Source(
                 label=f"{self.name.lower()}_source",
-                outputs={heat_pump_bus: solph.Flow(
+                outputs={output_bus: solph.Flow(
                     nominal_value= solph.Investment(ep_costs=epc,
                                      custom_attributes={
                                          "co2": {
@@ -47,7 +47,7 @@ class Converter(BaseComponent):
             return solph.components.Source(
                 label=f"{self.name.lower()}",
                 outputs={
-                    heat_pump_bus: solph.Flow(
+                    output_bus: solph.Flow(
                         nominal_value=self.nominal_power)
                 }
             )
