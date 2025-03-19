@@ -31,6 +31,7 @@ setup(
         "matplotlib",
         "numpy >= 1.16.5",
         "pandas >= 0.18.0",
+        "pvlib"
     ],
     package_data={
         "demandlib": [join("bdew_data", "*.csv")],
