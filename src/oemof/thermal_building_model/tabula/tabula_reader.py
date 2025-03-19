@@ -418,9 +418,9 @@ class Building:
         self.u_floor = self.update_u_values(self.u_floor, GEG_U_VALUES["floor"])
         self.u_window = self.update_u_values(self.u_window, GEG_U_VALUES["window"])
 
-    def update_u_values(u_dict, max_u_value):
+    def update_u_values(self,u_dict, new_u_value):
         """Updates the U-values in the dictionary """
-        return {key: min(value, max_u_value) for key, value in u_dict.items()}
+        return {key: new_u_value for key, value in u_dict.items()}
     def calc_area_ratio(self):
         if self.floor_area is None:
             self.floor_area = self.floor_area_reference
