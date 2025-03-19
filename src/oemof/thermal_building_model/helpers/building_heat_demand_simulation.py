@@ -1,7 +1,7 @@
 from typing import List
 import warnings
 from oemof.thermal_building_model.m_5RC import M5RC
-
+import numpy as np
 class HeatDemand_Simulation_5RC():
     r"""
     This class simulates the heating and cooling demand of a 5RC thermal
@@ -419,3 +419,59 @@ class HeatDemand_Simulation_5RC():
         # Calculate the temperature of the inside air
         self.t_air = (self.h_tr_is * self.t_s + self.h_ve *
                       t_supply + self.phi_ia) / (self.h_tr_is + self.h_ve)
+
+def find_highest_peak(heating_demand):
+    """
+    Finds the highest peak heating demand of the year (the maximum hourly demand).
+
+    Args:
+        heating_demand (list): Hourly space heating demand (length should be multiple of 24).
+
+    Returns:
+        tuple: (peak_index, peak_demand)
+    """
+    # Convert the list into a numpy array for better performance with numpy functions
+    heating_demand = np.array(heating_demand)
+
+    # Find the index of the highest peak demand
+    peak_index = np.argmax(heating_demand)
+    peak_demand = heating_demand[peak_index]
+
+    return peak_index + 24, peak_demand
+
+def get_space_heating_load_at(temperature:int|float,ecos=None, nominal_timespan:int=1, coldest_3day_finish_index:int=None):
+
+    internal_gains = list(0 for n in range(0, ecos.number_of_time_steps))
+    #solar_gains = list(0 for n in range(0,ecos.number_of_time_steps))
+    temp_outside_list = list(temperature for n in range(0, ecos.number_of_time_steps))
+
+    space_heating_demand_calculator = HeatDemand_Simulation_5RC(
+        building_config=ecos.building_tabula,
+        label="m5RC_sim",
+        t_outside=temp_outside_list,
+        solar_gains=ecos.building_tabula.calc_solar_gaings_through_windows(  # spellx
+            object_location_of_building=ecos.weather,
+            t_outside=ecos.temp_air_outside),  #: List, List,
+        internal_gains=internal_gains, #[0], # ecos.household_internal_heat_gains,
+        t_set_heating=20,  #t_set_heating,
+        t_set_cooling= 30,    # t_set_cooling,
+        t_set_heating_max=30,    # t_set_cooling,
+        max_power_heating=30000,
+        max_power_cooling=30000,
+        timesteps=coldest_3day_finish_index,
+    )
+
+    space_heating_demand_list, _, _ = space_heating_demand_calculator.solve()
+
+    space_heat_load = int(max(space_heating_demand_list)/nominal_timespan)
+    print(f"Calculated maximal space heat load of {space_heat_load} W at nominal {temperature}°C ")
+
+    return space_heat_load
+
+def calculate_inlet_temp(space_heating_load_old, space_heating_load_new, T_inlet_old):
+    """ ... by changed heating demand """
+    T_inside = 20
+    k = space_heating_load_old / (T_inlet_old - T_inside)
+    dT = space_heating_load_new / k
+    T_inlet_new = T_inside + dT
+    return int(T_inlet_new)
