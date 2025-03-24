@@ -14,13 +14,13 @@ import warnings
 class Demand:
     name: str
     level_heating_demand : Optional[float] = None
-    heat_level_calculation: bool = False
+    heat_level_calculation: bool = None
     nominal_value = 1
     bus: Optional[Union[solph.buses.Bus]] = None
     value_list: List = None
     level: int = None
-    total_capex_annuity: Optional[float] = None
-    total_co2_cost: Optional[float] = None
+    capex_annuity: Optional[float] = None
+    co2_cost: Optional[float] = None
     def create_demand(self) -> solph.components.Sink:
         """Creates a solph sink with revenue as variable cost."""
         if self.heat_level_calculation:
@@ -29,11 +29,12 @@ class Demand:
                 for key,values in self.bus.items():
                     if key == self.level_heating_demand:
                         bus = values
+                        self.heat_temp_bus = bus
                 assert bus is not None, "No matching temp for heat demand building with carrier."
 
             elif isinstance(self.bus, solph.buses.Bus):
                 # If `self.bus` is a single Bus instance, skip the dictionary check
-                bus = self.bus
+                self.heat_temp_bus = self.bus
                 warnings.warn(
                     "Warning: The building demand heating temperature might differ from the one supplied by the bus.",
                     stacklevel=2)
@@ -41,27 +42,43 @@ class Demand:
 
             else:
                 raise TypeError("self.bus must be either a dictionary or a single Bus object.")
+            self.oemof_component_name = f"{self.name.lower()}_lvl{self.heat_level_calculation}_demand"
             return solph.components.Sink(
-                label=f"{self.name.lower()}_lvl{self.heat_level_calculation}_demand",
-                inputs={bus: solph.Flow(
+                label=self.oemof_component_name,
+                inputs={self.heat_temp_bus: solph.Flow(
                     fix=self.value_list,
                     nominal_value=self.nominal_value,
-                    variable_costs=self.total_capex_annuity / sum(self.value_list),
-                    custom_attributes={"co2": {"offset": self.total_co2_cost}}
+                    variable_costs=sum(self.capex_annuity.values()) / sum(self.value_list),
+                    custom_attributes={"co2": sum(self.co2_cost.values())/ sum(self.value_list)}
                 )
                 }
             )
         else:
+            self.oemof_component_name = f"{self.name.lower()}_demand"
+            self.heat_temp_bus = self.bus
             return solph.components.Sink(
-                label=f"{self.name.lower()}_demand",
-                inputs={self.bus: solph.Flow(
+                label=self.oemof_component_name,
+                inputs={self.heat_temp_bus: solph.Flow(
                     fix=self.value_list,
                     nominal_value=self.nominal_value,
-                    variable_costs=self.total_capex_annuity / sum(self.value_list),
-                    custom_attributes={"co2":{"offset" : self.total_co2_cost}}
+                    variable_costs=sum(self.capex_annuity.values())/ sum(self.value_list),
+                    custom_attributes={"co2": sum(self.co2_cost.values())/ sum(self.value_list)}
                 )
                 }
             )
+    def get_heat_bus_of_demand_temp_level(self):
+        return self.heat_temp_bus
+
+    def post_process(self, results, component):
+        investment_cost = self.capex_annuity
+        investment_co2 = self.co2_cost
+        flow_into = self.get_flow_into_building(results, component)
+        return {"investment_cost": investment_cost,
+                "investment_co2": investment_co2,
+                "flow_into": flow_into}
+
+    def get_flow_into_building(self, results, component):
+        return results[ self.heat_temp_bus, component]["sequences"]["flow"]
 
 '''
 I think I want to add as well nur Dämmung des Daches als Variante
@@ -77,7 +94,6 @@ class ThermalBuilding(Demand):
     refurbishment_status: str = "no_refurbishment"
     construction_year: Optional[int] = None
     floor_area: Optional[float] = None
-    observation_period: float = 20
     building_parameters: Optional["BuildingParameters"] = None
     wall_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:wall_config)
     roof_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:roof_config)
@@ -173,7 +189,12 @@ class ThermalBuilding(Demand):
         tabula_building_code = self.building_object.tabula_building_code.array[0]
         index = tabula_building_code.find("Gen.") - 2
         tabula_gen = int(tabula_building_code[index:index + 1])
-
+        simplyfication_heat_demand_building_one_temp = True
+        if simplyfication_heat_demand_building_one_temp:
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            print("simplyfication_heat_demand_building_one_temp == TRUE")
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            return 40
         #era_related_heat_distribution_temp_levels = [(1980, 70), (2000, 60), (2010, 50), (3000, 40)]
         if tabula_building_code.endswith(".001"):
             era_related_heat_distribution_temp_levels = [(5, 70), (9, 60), (10, 50), (11, 40)]  # (XY.Gen,T_inlet)
@@ -242,7 +263,8 @@ class ThermalBuilding(Demand):
         if self.refurbishment_status == "no_refurbishment":
             investment_cost = {"key":0}
             co2_cost = {"key":0}
-            return investment_cost, co2_cost
+            capex_annuity = {"key":0}
+            return investment_cost, capex_annuity, co2_cost
         else:
             insulation_thickness = {}
             insulation_replacement = {}
