@@ -1,22 +1,25 @@
-from oemof.thermal_building_model.oemof_facades.base_component import EconomicsGrid
+from oemof.thermal_building_model.oemof_facades.base_component import GridComponents
 
 # Gas Grid
-gas_grid_config = EconomicsGrid(
+gas_grid_config = GridComponents(
     working_rate=0.1003 / 1000,
     revenue=0,
     price_change_factor=0.062,
-)
+    co2_per_flow=0.2511 / 1000)
+
 
 # Electricity Grid
-electricity_grid_config = EconomicsGrid(
-    working_rate=0.4175 / 1000,
+electricity_grid_config = GridComponents(
+    working_rate=0.2575 / 1000,
     revenue=0.0803 / 1000,
     price_change_factor=0.038,
-)
+    co2_per_flow=0.380 / 1000)
+
 
 # Heat Grid
-heat_grid_config = EconomicsGrid(
-    working_rate=0.1032 / 1000,
+heat_grid_config = GridComponents(
+    working_rate=0.1632 / 1000,
     revenue=0.0 / 1000,
     price_change_factor=0.061,
-)
+    co2_per_flow=0.1655 / 1000)
+
