@@ -1,9 +1,7 @@
 from dataclasses import dataclass
 from oemof import solph
 
-from oemof.tools import economics
 from typing import Optional, Union, List
-from oemof.thermal_building_model.oemof_facades.base_component import CO2Components, EconomicsInvestmentComponents
 from dataclasses import dataclass, field
 
 '''
@@ -36,6 +34,7 @@ class Carrier:
         for lower, higher in zip(sorted(self.bus.keys())[:-1], sorted(self.bus.keys())[1:]):
             # Set the flow from the higher to the lower bus
             self.bus[lower].inputs[self.bus[higher]] = solph.Flow()
+
     def get_bus(self, level_list:  [Union[List[int]]] = None):
         """
         - If level_list is given, return a dictionary of buses that match the given levels.
