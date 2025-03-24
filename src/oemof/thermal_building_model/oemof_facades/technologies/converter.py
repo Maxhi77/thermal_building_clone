@@ -1,4 +1,4 @@
-from oemof.thermal_building_model.oemof_facades.base_component import BaseComponent, EconomicsInvestmentComponents, CO2Components
+from oemof.thermal_building_model.oemof_facades.base_component import BaseComponent, InvestmentComponents
 from typing import Optional, List
 from oemof import solph
 from oemof.network import Bus
@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 import os
 from oemof.thermal_building_model.helpers import calculate_gain_by_sun
 from oemof.thermal_building_model.input.economics.investment_components import air_heat_pump_config, gas_heater_config
-from oemof.thermal_building_model.input.emissions.co2_components import air_heat_pump_co2, gas_heater_co2
 
 
 @dataclass
@@ -18,23 +17,28 @@ class Converter(BaseComponent):
     input_bus: Optional[Bus] = None
     output_bus: Optional[Bus] = None
     conversion_factors: Optional[dict] = None
-    economics_model: Optional[EconomicsInvestmentComponents] = None
-    co2_model: Optional[CO2Components] = None
-
-    def create_source(self,
-                      output_bus: Bus):
+    investment_component: Optional[InvestmentComponents] = None
+    def get_bus(self):
+        self.bus = solph.buses.Bus(label=f"b_{self.name.lower()}")
+        return self.bus
+    def create_source(self):
         """Creates a solph source with working_rate as variable cost and demand_rate added."""
+        self.oemof_component_name = f"{self.name.lower()}_source"
         if self.investment:
-            epc = self.economics_model.calculate_epc()  # Get EPC from economics model
+            epc = self.investment_component.calculate_epc()  # Get EPC from economics model
 
             return solph.components.Source(
-                label=f"{self.name.lower()}_source",
-                outputs={output_bus: solph.Flow(
+                label=self.oemof_component_name,
+                outputs={self.bus: solph.Flow(
                     nominal_value= solph.Investment(ep_costs=epc,
+                                                    maximum=self.investment_component.maximum_capacity,
+                                                    minimum=self.investment_component.minimum_capacity,
+                                                    offset=self.investment_component.cost_offset,
+                                                    nonconvex=True,
                                      custom_attributes={
                                          "co2": {
-                                             "offset": self.co2_model.offset_capacity if self.co2_model else 0.00,
-                                              "cost": self.co2_model.per_capacity if self.co2_model else 0.00
+                                             "offset": self.investment_component.co2_offset if self.investment_component else 0.00,
+                                              "cost": self.investment_component.co2_per_capacity if self.investment_component else 0.00
                                               }
                                       }
                         ),
@@ -45,24 +49,58 @@ class Converter(BaseComponent):
             )
         else:
             return solph.components.Source(
-                label=f"{self.name.lower()}",
+                label=self.oemof_component_name,
                 outputs={
-                    output_bus: solph.Flow(
+                    self.bus: solph.Flow(
                         nominal_value=self.nominal_power)
                 }
             )
+    def post_process(self,results,component,converter):
+        capacity, invest_status = self.get_capacity(results,component)
+        investment_cost = self.get_investment_cost(capacity,invest_status)
+        investment_co2 = self.get_investment_co2(capacity,invest_status)
+        into_converter = self.get_flow_into_converter(results,component)
+        out_converter = self.get_flow_out_converter(results,component,converter)
+        return {"capacity":capacity,
+                "investment_cost":investment_cost,
+                "investment_co2":investment_co2,
+                "flow_into_converter":into_converter,
+                "flow_from_converter":out_converter}
+    def get_capacity(self,results,component):
+        if self.investment:
+            return (solph.views.node(results, self.bus)[
+                "scalars"][ ((component, self.bus), "invest")]
+                    ,solph.views.node(results, self.bus)["scalars"].get(((component, self.bus), "invest_status"), 0))
+        else:
+            return component.outputs[self.bus].nominal_capacity, 0
+    def get_investment_cost(self,capacity,invest_status):
+        if self.investment:
+            return capacity * self.investment_component.cost_per_unit + self.investment_component.cost_offset * invest_status
+        else:
+            return 0
+    def get_investment_co2(self, capacity, invest_status):
+        if self.investment:
+            if self.investment_component.co2_offset > 0 and invest_status == 0 and capacity > 0:
+                raise ValueError(f"Error: 'invest_status' is None, so NonConvex=False, but co2_offset > 0 for component {self.name}")
+            else:
+                invest_status = 0
+            return capacity * self.investment_component.co2_per_capacity + self.investment_component.co2_offset * invest_status
+        else:
+            return 0
+    def get_flow_into_converter(self,results,component):
+        return results[component, self.bus]["sequences"]["flow"]
+
+    def get_flow_out_converter(self,results,component,converter):
+        return {key.label : results[self.bus, key]["sequences"]["flow"] for key in converter}
+
 @dataclass
 class GasHeater(Converter):
     name: str = "GasHeater"
     nominal_power: Optional[float] = 10000
     heat_carrier_bus: Optional[dict[Bus]] = None
     efficiency: Optional[float] = 0.99
-    co2_model: CO2Components = field(default_factory=lambda: gas_heater_co2)
-    economics_model: EconomicsInvestmentComponents = field(default_factory=lambda: gas_heater_config)
+    investment_component: InvestmentComponents = field(default_factory=lambda: gas_heater_config)
 
-    def get_bus(self):
-        self.bus = solph.buses.Bus(label=f"b_{self.name.lower()}")
-        return self.bus
     def create_converters(self,
                           gas_heater_bus: Bus,
                           gas_bus:Bus,
@@ -91,8 +129,7 @@ class AirHeatPump(Converter):
     lorenz_cop_temp_out_cooling: float = 10
     cop_for_setted_temp_interval: float = 4
     eer_for_setted_temp_interval: float = 4.8
-    co2_model: CO2Components = field(default_factory=lambda: air_heat_pump_co2)
-    economics_model: EconomicsInvestmentComponents = field(default_factory=lambda: air_heat_pump_config)
+    investment_component: InvestmentComponents = field(default_factory=lambda: air_heat_pump_config)
     def __post_init__(self):
         if self.air_temperature is None:
             main_path = get_project_root()
@@ -106,9 +143,7 @@ class AirHeatPump(Converter):
                 ),
             )
             self.air_temperature = location.weather_data["drybulb_C"].to_list()
-    def get_bus(self):
-        self.bus = solph.buses.Bus(label=f"b_{self.name.lower()}")
-        return self.bus
+
     def create_converters(self,
                           heat_pump_bus: Bus,
                           electricity_bus:Bus,
