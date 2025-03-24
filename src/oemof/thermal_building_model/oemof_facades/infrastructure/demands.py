@@ -31,6 +31,7 @@ class Demand:
                 bus = self.bus
             else:
                 raise TypeError("self.bus must be either a dictionary or a single Bus object.")
+            self.oemof_component_name = f"{self.name.lower()}_lvl{self.level}_demand"
             return solph.components.Sink(
                 label=f"{self.name.lower()}_lvl{self.level}_demand",
                 inputs={bus: solph.Flow(
@@ -39,6 +40,7 @@ class Demand:
                 )}
             )
         else:
+            self.oemof_component_name = f"{self.name.lower()}_demand"
             return solph.components.Sink(
                 label=f"{self.name.lower()}_demand",
                 inputs={self.bus: solph.Flow(
@@ -47,7 +49,8 @@ class Demand:
                 )
                 }
             )
-
+    def get_oemof_component_name(self):
+        return self.oemof_component_name
 @dataclass
 class ElectricityDemand(Demand):
     name: str = "Electricity"
@@ -69,7 +72,7 @@ class ElectricityDemand(Demand):
             elect_demand_df = (
                 df_elect.groupby(df_elect.index // 60)["Sum [kWh]"]
                 .sum()
-                .to_frame(name="Hourly_Sum")
+                .to_frame(name="Hourly_Sum")["Hourly_Sum"]
             )
             elect_demand_in_watt = elect_demand_df * 1000
             self.value_list = elect_demand_in_watt
@@ -100,7 +103,7 @@ class WarmWater(Demand):
             warm_water_demand_df = (
                 df_warm_water.groupby(df_warm_water.index // 60)["Sum [L]"]
                 .sum()
-                .to_frame(name="Hourly_Sum")
+                .to_frame(name="Hourly_Sum")["Hourly_Sum"]
             )
             heat_capacity_water = 4.18  # [kJ/(kg/K)
             warm_water_demand_in_watt = (
