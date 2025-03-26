@@ -86,11 +86,11 @@ class Grid:
 
     def create_sink(self) -> solph.components.Sink:
         """Creates a solph sink with revenue as variable cost."""
-        price = self.calculate_average_price(self.operation_grid.revenue)
+        price =  self.calculate_average_price(self.operation_grid.revenue)
         self.name_sink = f"{self.name.lower()}_into_grid"
         return solph.components.Sink(
             label=self.name_sink,
-            inputs={self.bus_into_grid: solph.Flow(variable_costs=price,
+            inputs={self.bus_into_grid: solph.Flow(variable_costs= - price,
                                          custom_attributes={"co2": - self.operation_grid.co2_per_flow if self.operation_grid else 0.00},
                                                    nominal_value=self.max_peak_into_grid)},
         )
