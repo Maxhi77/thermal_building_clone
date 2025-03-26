@@ -2,7 +2,7 @@ from oemof.thermal_building_model.oemof_facades.base_component import GridCompon
 
 # Gas Grid
 gas_grid_config = GridComponents(
-    working_rate=0.1003 / 1000,
+    working_rate=0.1187 / 1000,
     revenue=0,
     price_change_factor=0.062,
     co2_per_flow=0.2511 / 1000)
@@ -10,7 +10,7 @@ gas_grid_config = GridComponents(
 
 # Electricity Grid
 electricity_grid_config = GridComponents(
-    working_rate=0.2575 / 1000,
+    working_rate=0.4102 / 1000,
     revenue=0.0803 / 1000,
     price_change_factor=0.038,
     co2_per_flow=0.380 / 1000)
@@ -18,7 +18,7 @@ electricity_grid_config = GridComponents(
 
 # Heat Grid
 heat_grid_config = GridComponents(
-    working_rate=0.1632 / 1000,
+    working_rate=0.1432 / 1000,
     revenue=0.0 / 1000,
     price_change_factor=0.061,
     co2_per_flow=0.1655 / 1000)
