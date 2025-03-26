@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from oemof.thermal_building_model.input.economics.investment_components import pv_system_config
 @dataclass
 class RenewableEnergySource(BaseComponent):
-    timesteps : float = 3
     nominal_power: Optional[float] = None
     investment_component: Optional[InvestmentComponents] = None
     fixed_data : Optional[List[float]] = None
@@ -31,6 +30,7 @@ class RenewableEnergySource(BaseComponent):
                                                     minimum=self.investment_component.minimum_capacity,
                                                     offset=self.investment_component.cost_offset,
                                                     nonconvex=True,
+
                                      custom_attributes={
                                          "co2": {
                                              "offset": self.investment_component.co2_offset if self.investment_component else 0.00,
@@ -91,7 +91,6 @@ class RenewableEnergySource(BaseComponent):
 @dataclass
 class PVSystem(RenewableEnergySource):
     name: str = "PVSystem"
-    nominal_power: Optional[float] = 1000
     investment_component: InvestmentComponents = field(default_factory=lambda: pv_system_config)
     def __post_init__(self):
         if self.fixed_data is None:
