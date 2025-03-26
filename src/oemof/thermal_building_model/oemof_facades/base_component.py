@@ -20,23 +20,22 @@ class TimeConfiguration:
 class InvestmentComponents(TimeConfiguration):
     maximum_capacity: float
     cost_per_unit: float
-    cost_offset: float
+    cost_offset: float = 0
     co2_per_capacity: float = 0
     co2_offset: float = 0
     operational_cost_relative_to_capacity: float = 0
     minimum_capacity: float = 0
     wacc: float = 0.03
     def __post_init__(self):
-        self.cost_offset /= self.lifetime
+        self.cost_offset = economics.annuity(capex=self.cost_offset, n=self.observation_period, u=self.lifetime, wacc=self.wacc)
         self.co2_per_capacity = self.co2_per_capacity * self.get_depreciation_period()
         self.co2_offset = self.co2_offset * self.get_depreciation_period()
     def calculate_epc(self) -> float:
         """Calculates Equivalent Annual Cost (EPC) using annuity formula."""
         capex = (
                 self.cost_per_unit
-                + self.cost_per_unit * self.operational_cost_relative_to_capacity * self.lifetime
-                + (self.cost_offset if self.cost_offset is not None else 0)  # ✅ Correct check
-        )
+                + self.cost_per_unit * self.operational_cost_relative_to_capacity * self.lifetime)  # ✅ Correct check
+
         return economics.annuity(capex=capex, n=self.observation_period, u=self.lifetime, wacc=self.wacc)
 
     def get_depreciation_period(self):
