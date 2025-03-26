@@ -12,10 +12,12 @@ from oemof import solph
 import matplotlib.pyplot as plt
 import networkx as nx
 from oemof.network.graph import create_nx_graph
+import os
+import pickle
 from oemof.thermal_building_model.tabula.tabula_reader import Building
 import pprint as pp
 #  create solver
-def main(co2_new,peak_new,refurbish):
+def main(co2_new,peak_new,refurbish,building_id, floor_area):
     solver = "gurobi"  # 'glpk', 'gurobi',....
     number_of_time_steps = 8760
 
@@ -39,7 +41,7 @@ def main(co2_new,peak_new,refurbish):
     electricity_carrier_dataclass = ElectricityCarrier()
     electricity_carrier_bus = electricity_carrier_dataclass.get_bus()
     connect_buses(input=electricity_grid_bus_from_grid, target=electricity_carrier_bus, output=electricity_grid_bus_into_grid)
-    electricity_demand_dataclass = ElectricityDemand(
+    electricity_demand_dataclass = ElectricityDemand(building_id = building_id,
                                                     bus=electricity_carrier_bus)
     electricity_demand = electricity_demand_dataclass.create_demand()
 
@@ -67,7 +69,8 @@ def main(co2_new,peak_new,refurbish):
 
     heat_demand_dataclass = WarmWater(name="WarmWater",
                                        level = 40,
-                                       bus=heat_carrier_bus[40])
+                                       bus=heat_carrier_bus[40],
+                                        building_id=building_id)
     heat_demand = heat_demand_dataclass.create_demand()
 
     hot_water_tank_dataclass = HotWaterTank(
@@ -118,7 +121,7 @@ def main(co2_new,peak_new,refurbish):
     battery_dataclass = Battery(investment=True,
                                 input_bus = electricity_carrier_bus,
                                 output_bus = electricity_carrier_bus,
-                                maximum_capacity = 10000)
+                                maximum_capacity = 15000)
     battery = battery_dataclass.create_storage()
     es.add(battery)
     pv_dataclass = PVSystem(investment=True)
@@ -129,7 +132,8 @@ def main(co2_new,peak_new,refurbish):
 
 
 
-    building_dataclass = ThermalBuilding(name="Building",
+    building_dataclass = ThermalBuilding(name=building_id,
+                                         floor_area = floor_area,
                                           country="DE",
                                           construction_year=1980,
                                           class_building="average",
@@ -158,13 +162,14 @@ def main(co2_new,peak_new,refurbish):
     es.add(*(heat_components))
     es.add(*(electricity_components))
     model = solph.Model(es)
-    # Create the graph from the energy system (es)
-    graph = create_nx_graph(es)
 
-    # Draw the graph
-    plt.figure(figsize=(10, 6))  # Set figure size
-    nx.draw(graph, with_labels=True, font_size=8)
-    plt.show()
+    if False:
+        # Create the graph from the energy system (es)
+        graph = create_nx_graph(es)
+        # Draw the graph
+        plt.figure(figsize=(10, 6))  # Set figure size
+        nx.draw(graph, with_labels=True, font_size=8)
+        plt.show()
     if co2_new is None:
         model = solph.constraints.additional_total_limit(model, "co2", limit=10000000)
     else:
@@ -229,53 +234,106 @@ def main(co2_new,peak_new,refurbish):
         return final_results, co2
     except:
         return None, None
-refurbishment =[            "no_refurbishment",
-            "usual_refurbishment",
-            "advanced_refurbishment","GEG_standard"]
-refurbishment =["no_refurbishment"]
-for refurbish in refurbishment:
-    results_loop_to_save ={}
-    first_time= True
-    if first_time == True:
-        final_results, co2 = main(None, None,refurbish)
-        co2_reduction_factor = 1
-        peak_reduction_factor = 1
-    results_loop_to_save[(co2_reduction_factor, peak_reduction_factor,refurbish)] = {
-        "results": final_results,
-        "co2": co2,
-        "peak_reduction_factor" : peak_reduction_factor,
-        "refurbish": refurbish
-    }
-    co2_reference = co2
-    peak_reference = max(final_results["Electricity"]["peak_into_grid"],final_results["Electricity"]["peak_from_grid"])
-    co2_reduction_factors = [1,0.4] #[0.9,0.8,0.7,0.6,0.5,0.4]
-    peak_reduction_factors = [1,0.4] # [0.9,0.8,0.7,0.6,0.5,0.4]
-
-    for co2_reduction_factor in co2_reduction_factors:
-        co2_new = co2_reference * co2_reduction_factor
-        jump_to_next = False
-        for peak_reduction_factor in peak_reduction_factors:
-            print("new opt for: ")
-            print("co2: "+str(co2_reduction_factor))
-            print("peak: " + str(peak_reduction_factor))
-            peak_new = peak_reference * peak_reduction_factor
-            try:
-                final_results, co2  = main(co2_new,peak_new,refurbish)
-            except:
-                final_results = None
-                co2 = None
-            results_loop_to_save[(co2_reduction_factor, peak_reduction_factor,refurbish)] = {
-                "results": final_results,
-                "co2": co2,
-                "peak_reduction_factor": peak_reduction_factor,
-                "refurbish": refurbish
-
-            }
-            if final_results is None:
-                break
 
 
-import pickle
-print("optimizition doen")
-with open("results_1980_no_refurb.pkl", "wb") as f:
-    pickle.dump(results_loop_to_save, f)
+building_ids = [
+    #"DENILD1100004vsl",
+                #"DENILD1100004uSx",
+                #"DENILD1100004u2T",
+                #"DENILD1100004smj",
+                "DENILD1100004sZd",
+                "DENILD1100004rW0",
+                #"representativeSFH"
+]
+floor_areas = [
+    #375,
+               #212,
+    #366,
+    #393,
+    363,
+    249,
+
+    #326
+]
+if False:
+    building_ids = ["DENILD1100004vsl",
+                    "DENILD1100004uSx",
+                    "DENILD1100004u2T",
+                    "DENILD1100004sZd",
+                    "DENILD1100004smj",
+                    "DENILD1100004rW0",
+                    "representativeSFH"]
+building_floor_area_dict = dict(zip(building_ids, floor_areas))
+
+for building_id, floor_area in building_floor_area_dict.items():
+
+    refurbishment =["no_refurbishment","usual_refurbishment","advanced_refurbishment","GEG_standard"] # ,"no_refurbishment","usual_refurbishment""advanced_refurbishment","GEG_standard"
+    results_loop_to_save = {}
+    for refurbish in refurbishment:
+        final_results_ref, co2_ref = main(None, None,refurbish,building_id, floor_area)
+        co2_reduction_factor_ref = 1
+        peak_reduction_factor_ref = 1
+        results_loop_to_save[(co2_reduction_factor_ref, peak_reduction_factor_ref,refurbish)] = {
+            "results": final_results_ref,
+            "co2": co2_ref,
+            "peak_reduction_factor" : peak_reduction_factor_ref,
+            "refurbish": refurbish,
+            "totex": final_results_ref["totex"],
+            "peak": max(final_results_ref["Electricity"]["peak_into_grid"],final_results_ref["Electricity"]["peak_from_grid"])
+
+        }
+        co2_reference = co2_ref
+        peak_reference = max(final_results_ref["Electricity"]["peak_into_grid"],final_results_ref["Electricity"]["peak_from_grid"])
+        co2_reduction_factors = [0.8,0.6,0.4,0.2] # [0.8,0.6,0.4,0.2]
+        peak_reduction_factors = [1,0.8,0.6,0.4,0.2]
+
+        for co2_reduction_factor in co2_reduction_factors:
+            co2_new = co2_reference * co2_reduction_factor
+            for peak_reduction_factor in peak_reduction_factors:
+                print("new opt for: "+str(building_id))
+                print("co2: "+str(co2_reduction_factor))
+                print("peak: " + str(peak_reduction_factor))
+                peak_new = peak_reference * peak_reduction_factor
+                try:
+                    final_results, co2  = main(co2_new,peak_new,refurbish,building_id, floor_area)
+                    totex = final_results["totex"]
+                    peak = max(final_results_ref["Electricity"]["peak_into_grid"],
+                        final_results_ref["Electricity"]["peak_from_grid"])
+                except:
+                    final_results = None
+                    co2 = None
+                    totex = None
+                    peak = None
+
+                results_loop_to_save[(co2_reduction_factor, peak_reduction_factor,refurbish)] = {
+                    "results": final_results,
+                    "co2": co2,
+                    "peak_reduction_factor": peak_reduction_factor,
+                    "refurbish": refurbish,
+                    "totex": totex,
+                    "peak": peak
+                }
+                if final_results is None:
+                    continue
+        file_path="results_"+str(building_id)+"_"+str(refurbish)+"_.pkl"
+        if os.path.exists(file_path):
+            # If the file exists, open it and load the data
+            with open(file_path, "rb") as f:
+                existing_results = pickle.load(f)
+            print(f"Loaded existing results for {file_path}")
+
+            # Now you can add more data to existing_results
+            existing_results.update(results_loop_to_save)  # Example of adding new data
+
+        else:
+            # If the file doesn't exist, create it and save the results
+            existing_results = results_loop_to_save
+            print(f"New results created for {file_path}")
+
+        # Save the updated or new results back to the pickle file
+        with open(file_path, "wb") as f:
+            pickle.dump(existing_results, f)
+    # Save the updated or new results back to the pickle file
+    if results_loop_to_save is not None:
+        with open("results_"+str(building_id)+"_.pkl", "wb") as f:
+            pickle.dump(results_loop_to_save, f)

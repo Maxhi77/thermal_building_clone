@@ -51,7 +51,7 @@ heat_grid_source = heat_grid_dataclass.create_source()
 heat_grid_bus_from_grid = heat_grid_dataclass.get_bus_from_grid()
 heat_grid_bus_into_grid = heat_grid_dataclass.get_bus_into_grid()
 
-heat_carrier_temperature_levels = [20]
+heat_carrier_temperature_levels = [20,40]
 heat_carrier_dataclass = HeatCarrier(levels = heat_carrier_temperature_levels)
 heat_carrier_dataclass.connect_buses_decreasing_levels()
 heat_carrier_bus = heat_carrier_dataclass.get_bus()
@@ -65,27 +65,27 @@ heat_demand_dataclass = HeatDemand(name="HotWater",
                                    level = 20,
                                    bus=heat_carrier_dataclass.get_bus([20]))
 
-
-hot_water_tank_dataclass = HotWaterTank(
-    min_temperature=min(heat_carrier_bus.keys()),
-    max_temperature=max(heat_carrier_bus.keys())+10,
-    temperature_buses = heat_carrier_bus
-    )
-hot_water_tank_bus_from_storage = hot_water_tank_dataclass.generate_bus_from_storage()
-hot_water_tank_bus_into_storage = hot_water_tank_dataclass.generate_storage_into_bus()
-hot_water_tank = hot_water_tank_dataclass.create_storage(input_bus=hot_water_tank_bus_into_storage,
-                                                        output_bus=hot_water_tank_bus_from_storage)
-generate_error = False
-if generate_error:
-    connect_buses(input=heat_carrier_bus,
-                  target=hot_water_tank_bus_into_storage,
-
+if False:
+    hot_water_tank_dataclass = HotWaterTank(
+        min_temperature=min(heat_carrier_bus.keys()),
+        max_temperature=max(heat_carrier_bus.keys())+10,
+        temperature_buses = heat_carrier_bus
         )
+    hot_water_tank_bus_from_storage = hot_water_tank_dataclass.generate_bus_from_storage()
+    hot_water_tank_bus_into_storage = hot_water_tank_dataclass.generate_storage_into_bus()
+    hot_water_tank = hot_water_tank_dataclass.create_storage(input_bus=hot_water_tank_bus_into_storage,
+                                                            output_bus=hot_water_tank_bus_from_storage)
+    generate_error = True
+    if generate_error:
+        connect_buses(input=heat_carrier_bus,
+                      target=hot_water_tank_bus_into_storage,
 
-connect_buses(input = hot_water_tank_bus_from_storage,
-             target=heat_carrier_bus)
+            )
 
-es.add(hot_water_tank_bus_from_storage,hot_water_tank_bus_into_storage,hot_water_tank)
+    connect_buses(input = hot_water_tank_bus_from_storage,
+                 target=heat_carrier_bus)
+
+    es.add(hot_water_tank_bus_from_storage,hot_water_tank_bus_into_storage,hot_water_tank)
 
 find_error_plotting=False
 if find_error_plotting:

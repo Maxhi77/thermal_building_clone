@@ -285,6 +285,23 @@ def main(refurbishment_status, cost_refurbishment):
         conversion_factors={b_elect: cpf_cop_7_35, b_heat: 1},
     )
     # create heat storage
+    elect_storage = solph.components.GenericStorage(
+        label="GenericStorag2e",
+        inputs={b_elect: solph.flows.Flow(variable_costs=0)},
+        outputs={b_elect: solph.flows.Flow(variable_costs=0)},
+        balanced=True,
+        investment=solph.Investment(
+            ep_costs=epc_heat_storage,
+            nonconvex=True,
+            maximum=5 * storage_volumen_in_Wh_per_kg * qubick_meter_water_in_kg,
+        ),
+        invest_relation_input_capacity=0.2,
+        invest_relation_output_capacity=0.2,
+        loss_rate=0.01,
+        inflow_conversion_factor=0.99,
+        outflow_conversion_factor=0.99,
+    )
+    es.add(elect_storage)
     heat_storage = solph.components.GenericStorage(
         label="GenericStorage",
         inputs={b_heat: solph.flows.Flow(variable_costs=0)},
