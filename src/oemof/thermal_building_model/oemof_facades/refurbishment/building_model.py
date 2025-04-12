@@ -10,6 +10,7 @@ from oemof.thermal_building_model.oemof_facades.base_component import EconomicsI
 from oemof.thermal_building_model.helpers.building_heat_demand_simulation import find_highest_peak, calculate_inlet_temp
 import os
 import warnings
+import copy
 @dataclass
 class Demand:
     name: str
@@ -48,8 +49,8 @@ class Demand:
                 inputs={self.heat_temp_bus: solph.Flow(
                     fix=self.value_list,
                     nominal_value=self.nominal_value,
-                    variable_costs=sum(self.capex_annuity.values()) / sum(self.value_list),
-                    custom_attributes={"co2": sum(self.co2_cost.values())/ sum(self.value_list)}
+                    variable_costs=self.capex_annuity / sum(self.value_list),
+                    custom_attributes={"co2": self.co2_cost/ sum(self.value_list)}
                 )
                 }
             )
@@ -61,8 +62,8 @@ class Demand:
                 inputs={self.heat_temp_bus: solph.Flow(
                     fix=self.value_list,
                     nominal_value=self.nominal_value,
-                    variable_costs=sum(self.capex_annuity.values())/ sum(self.value_list),
-                    custom_attributes={"co2": sum(self.co2_cost.values())/ sum(self.value_list)}
+                    variable_costs=self.capex_annuity/ sum(self.value_list),
+                    custom_attributes={"co2": self.co2_cost/ sum(self.value_list)}
                 )
                 }
             )
@@ -75,7 +76,8 @@ class Demand:
         flow_into = self.get_flow_into_building(results, component)
         return {"investment_cost": investment_cost,
                 "investment_co2": investment_co2,
-                "flow_into": flow_into}
+                "flow_into": flow_into,
+                "sum":flow_into.sum()}
 
     def get_flow_into_building(self, results, component):
         return results[ self.heat_temp_bus, component]["sequences"]["flow"]
@@ -86,23 +88,26 @@ I think I want to add as well nur Dämmung des Daches als Variante
 @dataclass
 class ThermalBuilding(Demand):
     name: Optional[str] = None
+    number_of_occupants:float = 0
+    number_of_household:float = 1
     number_of_time_steps: Optional[float] = None
     tabula_building_code: Optional[str] = None
     country: Optional[str] = None
     class_building: str = "heavy"
-    building_type: Optional[str] = None
+    building_type: Optional[str] = "SFH"
     refurbishment_status: str = "no_refurbishment"
     construction_year: Optional[int] = None
     floor_area: Optional[float] = None
     building_parameters: Optional["BuildingParameters"] = None
-    wall_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:wall_config)
-    roof_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:roof_config)
-    floor_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:floor_config)
-    door_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:door_config)
-    window_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:window_config)
+    wall_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:copy.deepcopy(wall_config))
+    roof_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:copy.deepcopy(roof_config))
+    floor_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:copy.deepcopy(floor_config))
+    door_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:copy.deepcopy(door_config))
+    window_config: EconomicsInvestmentRefurbishment = field(default_factory=lambda:copy.deepcopy(window_config))
 
 
     def __post_init__(self):
+
         self.building_object = Building(
             number_of_time_steps=self.number_of_time_steps,
             tabula_building_code=self.tabula_building_code,
@@ -121,7 +126,7 @@ class ThermalBuilding(Demand):
                 "thermal_building_model",
                 "input",
                 "weather_files",
-                "12_BW_Mannheim_TRY2035.csv",
+                "03_HH_Hamburg-Fuhlsbuttel_TRY2035.epw",
             ),
         )
         self.t_outside = self.location.weather_data["drybulb_C"].to_list()
@@ -133,17 +138,22 @@ class ThermalBuilding(Demand):
             object_location_of_building=self.location,
             t_outside=self.t_outside
         )
-
+        if "MFH" in self.building_type :
+            gain_technology_per_hour_in_watt = 200 * self.number_of_household
+        elif "SFH" in self.building_type :
+            gain_technology_per_hour_in_watt = 250
+        else:
+            gain_technology_per_hour_in_watt = 200
         # Internal gains of residents, machines (f.e. fridge, computer,...) and lights have to be added manually
         self.internal_gains = []
         self.t_set_heating = []
         self.t_set_cooling = []
         for _ in range(self.number_of_time_steps + 1):
-            self.internal_gains.append(3446 * 1000 / 8760)
+            self.internal_gains.append(self.number_of_occupants*50+ gain_technology_per_hour_in_watt)
             self.t_set_heating.append(20)
             self.t_set_cooling.append(40)
-        self.max_power_heating = 20000
-        self.max_power_cooling = 20000
+        self.max_power_heating = 30000
+        self.max_power_cooling = 30000
         self.t_set_heating_max = 24
         self.t_inital=20
         heating_demand, _, _ = HeatDemand_Simulation_5RC(
@@ -176,14 +186,21 @@ class ThermalBuilding(Demand):
 
         else:
             self.reference_building = self.building_object
-        self.investment_cost, self.capex_annuity, self.co2_cost = self.get_refurbishment_cost ()
+        self.investment_cost_per_measure, self.capex_annuity_per_measure, self.co2_cost_per_measure = self.get_refurbishment_cost ()
 
         self.level_heating_demand = self.calculate_heat_distribution_temperature()
 
-        self.total_capex_annuity = sum(self.capex_annuity.values())
-        self.total_co2_cost = sum(self.co2_cost.values())
-    def get_insulation_thickness(self):
-        print(2)
+        self.capex_annuity = sum(self.capex_annuity_per_measure.values())
+        self.co2_cost = sum(self.co2_cost_per_measure.values())
+
+    def set_number_of_buildings_in_cluster(self,buildings_in_cluster):
+        self.capex_annuity = self.capex_annuity * buildings_in_cluster
+        self.co2_cost = self.co2_cost * buildings_in_cluster
+    def get_roof_area_for_pv(self):
+        total_a_floor = sum(self.building_object.a_floor.values())
+        # https://www.agora-energiewende.de/fileadmin/Projekte/2023/2023-16_DE_Dach-PV-Potenzial/2023-16_DE_Dach-PV-Potenzial_Dokumentation.pdf?utm_source=chatgpt.com
+        reduction_factor_for_pitched_roofs = 0.6  * 0.65
+        return total_a_floor * reduction_factor_for_pitched_roofs
 
     def calculate_heat_distribution_temperature(self) -> float:
         tabula_building_code = self.building_object.tabula_building_code.array[0]
@@ -308,7 +325,7 @@ class ThermalBuilding(Demand):
                                         self.floor_config.cost_offset) * area
                 capex_annuity[key.replace('a_', '')] = self.floor_config.calculate_epc(investment_cost[key.replace('a_', '')])
                 co2_cost[key.replace('a_', '')] = (insulation_thickness[key.replace('a_', '')] *
-                                        self.floor_config.co2_per_unit * area) *self.floor_config.get_depreciation_period()
+                                        self.floor_config.co2_per_unit * area) *self.floor_config.get_depreciation_period() /self.floor_config.lifetime
             for key, area in self.building_object.a_wall.items():
                 investment_cost[key.replace('a_', '')] = (insulation_thickness[key.replace('a_', '')] *
                                         self.wall_config.cost_per_unit +
@@ -316,7 +333,7 @@ class ThermalBuilding(Demand):
                 capex_annuity[key.replace('a_', '')] = self.wall_config.calculate_epc(investment_cost[key.replace('a_', '')])
 
                 co2_cost[key.replace('a_', '')] = (insulation_thickness[key.replace('a_', '')] *
-                                        self.wall_config.co2_per_unit * area) *self.wall_config.get_depreciation_period()
+                                        self.wall_config.co2_per_unit * area) *self.wall_config.get_depreciation_period()/self.wall_config.lifetime
             for key, area in self.building_object.a_roof.items():
                 investment_cost[key.replace('a_', '')] = (insulation_thickness[key.replace('a_', '')] *
                                         self.roof_config.cost_per_unit +
@@ -324,7 +341,7 @@ class ThermalBuilding(Demand):
                 capex_annuity[key.replace('a_', '')] = self.roof_config.calculate_epc(investment_cost[key.replace('a_', '')])
 
                 co2_cost[key.replace('a_', '')] = (insulation_thickness[key.replace('a_', '')] *
-                                        self.roof_config.co2_per_unit * area) *self.roof_config.get_depreciation_period()
+                                        self.roof_config.co2_per_unit * area) *self.roof_config.get_depreciation_period()/self.roof_config.lifetime
 
             for key, area in self.building_object.a_window.items():
                 if area==0:
