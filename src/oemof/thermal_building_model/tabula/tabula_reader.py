@@ -225,7 +225,7 @@ class Building:
                 self.tabula_df["Number_BuildingVariant"]
                 == variant_mapping[refurbishment_status]
             ]
-add            self.tabula_df = self.tabula_df[~self.tabula_df["Code_BuildingVariant"].str.contains("East", na=False)]
+            self.tabula_df = self.tabula_df[~self.tabula_df["Code_BuildingVariant"].str.contains("East", na=False)]
             assert len(self.tabula_df) <= 1, (
                 "More than one building is founded for "
                 "the input parameters. Please write an "
