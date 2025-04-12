@@ -2,7 +2,7 @@ from oemof.thermal_building_model.oemof_facades.base_component import Investment
 
 # Investment Components for each technology
 battery_config = InvestmentComponents(
-    maximum_capacity=20000,
+    maximum_capacity=100000,
     minimum_capacity=1000,
     cost_per_unit=1000 / 1000,
     cost_offset=500,
@@ -11,7 +11,7 @@ battery_config = InvestmentComponents(
 )
 # capacity is m^3
 hot_water_tank_config = InvestmentComponents(
-    maximum_capacity=500,
+    maximum_capacity=40,
     minimum_capacity=1,
     cost_per_unit=300 / 1000,
     cost_offset=200,
@@ -21,17 +21,17 @@ hot_water_tank_config = InvestmentComponents(
 )
 
 air_heat_pump_config = InvestmentComponents(
-    maximum_capacity=30000,
+    maximum_capacity=100000,
     minimum_capacity=2000,
-    cost_per_unit=600 / 1000,
-    cost_offset=5000,
+    cost_per_unit=800 / 1000,
+    cost_offset=6000,
     lifetime=20,
     co2_per_capacity = 0.03097,
     operational_cost_relative_to_capacity= 0.02,
 )
 
 gas_heater_config = InvestmentComponents(
-    maximum_capacity=30000,
+    maximum_capacity=100000,
     minimum_capacity=2000,
     cost_per_unit=100 / 1000,
     cost_offset=2800,
