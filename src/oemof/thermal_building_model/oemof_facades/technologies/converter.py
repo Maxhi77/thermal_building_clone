@@ -5,7 +5,7 @@ from oemof.network import Bus
 from oemof.thermal_building_model.oemof_facades.helper_functions import calculate_cop, celsius_to_kelvin
 from oemof.thermal_building_model.helpers.path_helper import get_project_root
 from dataclasses import dataclass, field
-
+import copy
 import os
 from oemof.thermal_building_model.helpers import calculate_gain_by_sun
 from oemof.thermal_building_model.input.economics.investment_components import air_heat_pump_config, gas_heater_config
@@ -34,6 +34,7 @@ class Converter(BaseComponent):
                                                     maximum=self.investment_component.maximum_capacity,
                                                     minimum=self.investment_component.minimum_capacity,
                                                     offset=self.investment_component.cost_offset,
+                                                    lifetime=self.investment_component.lifetime,
                                                     nonconvex=True,
                                      custom_attributes={
                                          "co2": {
@@ -68,9 +69,12 @@ class Converter(BaseComponent):
                 "flow_from_converter":out_converter}
     def get_capacity(self,results,component):
         if self.investment:
-            return (solph.views.node(results, self.bus)[
-                "scalars"][ ((component, self.bus), "invest")]
-                    ,solph.views.node(results, self.bus)["scalars"].get(((component, self.bus), "invest_status"), 0))
+            if self.investment_component.multiperiod:
+                return (results[component, self.bus]["period_scalars"]["invest"].sum(),1 if results[component, self.bus]["period_scalars"]["invest"].sum()>0 else 0)
+            else:
+                return (solph.views.node(results, self.bus)[
+                    "scalars"][ ((component, self.bus), "invest")]
+                        ,solph.views.node(results, self.bus)["scalars"].get(((component, self.bus), "invest_status"), 0))
         else:
             return component.outputs[self.bus].nominal_capacity, 0
     def get_investment_cost(self,capacity,invest_status):
@@ -99,7 +103,7 @@ class GasHeater(Converter):
     nominal_power: Optional[float] = 10000
     heat_carrier_bus: Optional[dict[Bus]] = None
     efficiency: Optional[float] = 0.99
-    investment_component: InvestmentComponents = field(default_factory=lambda: gas_heater_config)
+    investment_component: InvestmentComponents = field(default_factory=lambda: copy.deepcopy(gas_heater_config))
 
     def create_converters(self,
                           gas_heater_bus: Bus,
@@ -129,7 +133,7 @@ class AirHeatPump(Converter):
     lorenz_cop_temp_out_cooling: float = 10
     cop_for_setted_temp_interval: float = 4
     eer_for_setted_temp_interval: float = 4.8
-    investment_component: InvestmentComponents = field(default_factory=lambda: air_heat_pump_config)
+    investment_component: InvestmentComponents = field(default_factory=lambda: copy.deepcopy(air_heat_pump_config))
     def __post_init__(self):
         if self.air_temperature is None:
             main_path = get_project_root()
