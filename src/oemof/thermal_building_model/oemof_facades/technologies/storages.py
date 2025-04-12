@@ -4,6 +4,7 @@ from oemof import solph
 from dataclasses import dataclass, field
 from oemof.network import Bus
 from oemof.thermal_building_model.input.economics.investment_components import battery_config,hot_water_tank_config
+import copy
 
 @dataclass
 class Storage(BaseComponent):
@@ -16,7 +17,7 @@ class Storage(BaseComponent):
     balanced : bool = True
     loss_rate: Optional[float] = None
     min_storage_level: Optional[float] = None
-    initial_storage_level: Optional[float] = 0
+    initial_storage_level: Optional[float] = None
     charging_efficiency: Optional[float] = None
     discharging_efficiency: Optional[float] = None
     investment_component: Optional[InvestmentComponents] = None
@@ -27,7 +28,7 @@ class Storage(BaseComponent):
         self.oemof_component_name = f"{self.name.lower()}"
         if self.investment:
             epc = self.investment_component.calculate_epc()  # Get EPC from economics model
-
+            print(str(self.investment_component)+":"+ str(epc))
             return solph.components.GenericStorage(
                 label=self.oemof_component_name,
                 inputs={self.input_bus: solph.Flow()},
@@ -39,6 +40,7 @@ class Storage(BaseComponent):
                                                           maximum=self.investment_component.maximum_capacity,
                                                           minimum=self.investment_component.minimum_capacity,
                                                           offset=self.investment_component.cost_offset,
+                                                          lifetime=self.investment_component.lifetime,
                                                           custom_attributes={
                                                               "co2": {
                                                                 "offset": self.investment_component.co2_offset if self.investment_component else 0.00,
@@ -51,7 +53,9 @@ class Storage(BaseComponent):
                 initial_storage_level=self.initial_storage_level,
                 inflow_conversion_factor=self.charging_efficiency,
                 outflow_conversion_factor=self.discharging_efficiency,
-                balanced = self.balanced
+                balanced = self.balanced,
+                lifetime_inflow=self.investment_component.lifetime,
+                lifetime_outflow=self.investment_component.lifetime,
             )
 
         else:
@@ -91,8 +95,11 @@ class Storage(BaseComponent):
 
     def get_capacity(self, results, component):
         if self.investment:
-            return (solph.views.node(results, self.output_bus)["scalars"][((component, self.output_bus), "invest")]
-                    ,solph.views.node(results, self.output_bus)["scalars"].get(((component, self.output_bus), "invest_status"), 0))
+            if self.investment_component.multiperiod:
+                return (results[component, self.output_bus]["period_scalars"]["invest"].sum(),1 if results[component, self.output_bus]["period_scalars"]["invest"].sum()>0 else 0)
+            else:
+                return (solph.views.node(results, self.output_bus)["scalars"][((component, self.output_bus), "invest")]
+                        ,solph.views.node(results, self.output_bus)["scalars"].get(((component, self.output_bus), "invest_status"), 0))
         else:
             return component.nominal_storage_capacity, 0
 
@@ -136,7 +143,7 @@ class HotWaterTank(Storage):
     min_temperature: Optional[float] = None
     diameter: float = 0.5
     volume_in_m3 : float  = 100
-    investment_component: InvestmentComponents = field(default_factory=lambda:hot_water_tank_config)
+    investment_component: InvestmentComponents = field(default_factory=lambda: copy.deepcopy(hot_water_tank_config))  # Use deepcopy
 
     # capacity is m^3
     def __post_init__(self):
@@ -148,6 +155,7 @@ class HotWaterTank(Storage):
             else:
                 self.nominal_capacity = None
         else:
+            print("in storage"+str(self.investment_component))
             self.investment_component.maximum_capacity = self.storage_capacity_at_temperature_for_a_volume(volume =self.investment_component.maximum_capacity,
                                                                                                           temperature=self.max_temperature)
             self.investment_component.cost_per_unit /= self.relative_storage_capacity_in_wh_per_volume(temperature=self.max_temperature)
@@ -183,10 +191,9 @@ class Battery(Storage):
     discharging_capacity_rate: float = 1
     charging_efficiency: float = 0.98
     discharging_efficiency: float = 0.95
-    initial_storage_level: float = 0.0
     initial_soc: float = 0.5
     min_storage_level: float = 0
-    investment_component: InvestmentComponents = field(default_factory=lambda:battery_config)
+    investment_component: InvestmentComponents = field(default_factory=lambda: copy.deepcopy(battery_config))
 
 
 
