@@ -423,7 +423,7 @@ def process_cluster(cluster_df, building_type, epw_path, directory_path, data, r
 
 
 
-def main():
+def run_main(refurbish):
     base_path = os.path.dirname(os.path.abspath(__file__))
     ueu = "processed_bds_in_DENI03403000SEC5658"
     directory_path =os.path.join(base_path, ueu)
@@ -434,9 +434,10 @@ def main():
         sfh_cluster = pickle.load(f)
     with open(mfh_cluster_path, 'rb') as f:
         mfh_cluster = pickle.load(f)
-    refurbishment =["no_refurbishment","usual_refurbishment","advanced_refurbishment"] #"GEG_standard"]
     results_loop_to_save = {}
-    for refurbish in refurbishment:
+    ev = "no_EV"
+    buildings_connected="con" #or uncon
+    if True:
         print(refurbish)
 
 
@@ -451,8 +452,7 @@ def main():
                 "weather_files",
                 "03_HH_Hamburg-Fuhlsbuttel_TRY2035.csv",
             )
-        ev = "no_EV"
-        buildings_connected="con" #or uncon
+
         data,data_classes_comp = process_cluster(
             cluster_df=sfh_cluster,
             building_type="SFH",
@@ -491,7 +491,7 @@ def main():
         date_time_index = solph.create_time_index(2025, number=number_of_time_steps - 1)
         data.index = date_time_index
 
-        typical_periods = 30
+        typical_periods = 25
         hours_per_period = 24
 
         aggregation1 = tsam.TimeSeriesAggregation(
@@ -522,8 +522,8 @@ def main():
         }
         co2_reference = co2_ref
         peak_reference = final_results_ref["Electricity"]["peak_from_grid"]
-        co2_reduction_factors = [0.85,0.6,0.45,0.3,0.15]
-        peak_reduction_factors = [1,0.85,0.6,0.45,0.3,0.15]
+        co2_reduction_factors = [0.9,0.8,0.7,0.6,0.5]
+        peak_reduction_factors = [1,0.9,0.8,0.7,0.6,0.5,0.4]
         peak_calculation_worked = True
         co2_calculation_worked = True
         for co2_reduction_factor in co2_reduction_factors:
@@ -591,4 +591,10 @@ def main():
         with open("results_"+str(ueu)+"_.pkl", "wb") as f:
             pickle.dump(results_loop_to_save, f)
 
-main()
+if __name__ == "__main__":
+    refurbish =["no_refurbishment","usual_refurbishment","advanced_refurbishment"]  # Beispiel #"GEG_standard"
+    import multiprocessing
+    import os
+    # Multiprocessing-Pool erstellen
+    with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+        pool.map(run_main, refurbish)
