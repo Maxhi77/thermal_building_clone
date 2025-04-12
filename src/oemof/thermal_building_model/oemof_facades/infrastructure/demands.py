@@ -11,7 +11,7 @@ class Demand:
     bus: Optional[Union[solph.buses.Bus]] = None
     value_list: List = None
     level: int = None
-    building_id: Optional[str] = None
+    demand_path: Optional[str] = None
 
     def create_demand(self) -> solph.components.Sink:
         """Creates a solph sink with revenue as variable cost."""
@@ -59,39 +59,43 @@ class Demand:
 class ElectricityDemand(Demand):
     name: str = "ElectricityDemand"
     def __post_init__(self):
-        if self.building_id is None:
-            main_path = get_project_root()
-            # Elect Demand
-            df_elect = pd.read_csv(
-                os.path.join(
-                    main_path,
-                    "thermal_building_model",
-                    "input",
-                    "sfh_example",
-                    "SumProfiles.Electricity.csv",
-                ),
-                delimiter=";",
-            )
-            elect_demand_df = (
-                df_elect.groupby(df_elect.index // 60)["Sum [kWh]"]
-                .sum()
-                .to_frame(name="Hourly_Sum")["Hourly_Sum"]
-            )
-            elect_demand_in_watt = elect_demand_df * 1000
-            self.value_list = elect_demand_in_watt
-        else:
-            main_path = get_project_root()
-            df  = pd.read_pickle(
-                os.path.join(
-                    main_path,
-                    "thermal_building_model",
-                    "input",
-                    "bds_in_DENI03403000SEC5291",
-                    str(self.building_id)+".pkl",
-                ),
-            )
-            df_elect =( df["Electricity_HH1"] + df["Electricity_House"] ) * 1000
-            self.value_list = df_elect
+        if self.value_list is None:
+            if self.demand_path is None:
+                main_path = get_project_root()
+                # Elect Demand
+                df_elect = pd.read_csv(
+                    os.path.join(
+                        main_path,
+                        "thermal_building_model",
+                        "input",
+                        "sfh_example",
+                        "SumProfiles.Electricity.csv",
+                    ),
+                    delimiter=";",
+                )
+                elect_demand_df = (
+                    df_elect.groupby(df_elect.index // 60)["Sum [kWh]"]
+                    .sum()
+                    .to_frame(name="Hourly_Sum")["Hourly_Sum"]
+                )
+                elect_demand_in_watt = elect_demand_df * 1000
+                self.value_list = elect_demand_in_watt
+            else:
+
+                df_elect = pd.read_csv(
+                    os.path.join(os.path.join(self.demand_path)
+                    ),
+                    delimiter=";",
+                )
+                elect_demand_df = (
+                    df_elect.groupby(df_elect.index // 60)["Sum [kWh]"]
+                    .sum()
+                    .to_frame(name="Hourly_Sum")["Hourly_Sum"]
+                )
+
+                #df_elect =( df["Electricity_HH1"] + df["Electricity_House"] ) * 1000
+                df_elect = (elect_demand_df) * 1000
+                self.value_list = df_elect.tolist()
 @dataclass
 class HeatDemand(Demand):
     name: str = "HeatDemand"
@@ -102,46 +106,54 @@ class WarmWater(Demand):
     name: str = "WarmWaterDemand"
     base_temperature:float = 35
     demand_temperature:float = 10
-
     def __post_init__(self):
-        if self.building_id is None:
-            main_path = get_project_root()
-            df_warm_water = pd.read_csv(
-                os.path.join(
-                    main_path,
-                    "thermal_building_model",
-                    "input",
-                    "sfh_example",
-                    "SumProfiles.Warm Water.csv",
-                ),
-                delimiter=";",
-            )
-            warm_water_demand_df = (
-                df_warm_water.groupby(df_warm_water.index // 60)["Sum [L]"]
-                .sum()
-                .to_frame(name="Hourly_Sum")["Hourly_Sum"]
-            )
-            heat_capacity_water = 4.18  # [kJ/(kg/K)
-            warm_water_demand_in_watt = (
-                    (35 - 10) * heat_capacity_water * warm_water_demand_df * (1000 / 3600)
-            )
-            self.value_list = warm_water_demand_in_watt
+        if self.value_list is None:
+            if self.demand_path is None:
+                main_path = get_project_root()
+                df_warm_water = pd.read_csv(
+                    os.path.join(
+                        main_path,
+                        "thermal_building_model",
+                        "input",
+                        "sfh_example",
+                        "SumProfiles.Warm Water.csv",
+                    ),
+                    delimiter=";",
+                )
+                warm_water_demand_df = (
+                    df_warm_water.groupby(df_warm_water.index // 60)["Sum [L]"]
+                    .sum()
+                    .to_frame(name="Hourly_Sum")["Hourly_Sum"]
+                )
+                heat_capacity_water = 4.18  # [kJ/(kg/K)
+                warm_water_demand_in_watt = (
+                        (35 - 10) * heat_capacity_water * warm_water_demand_df * (1000 / 3600)
+                )
+                self.value_list = warm_water_demand_in_watt
 
 
+            else:
+                df_warm_water = pd.read_csv(
+                    os.path.join(self.demand_path),
+                    delimiter=";",
+                )
+                warm_water_demand_df = (
+                    df_warm_water.groupby(df_warm_water.index // 60)["Sum [L]"]
+                    .sum()
+                    .to_frame(name="Hourly_Sum")["Hourly_Sum"]
+                )
+
+                #df_ww=df["Warm Water_HH1"]
+                df_ww=warm_water_demand_df
+                heat_capacity_water = 4.18  # [kJ/(kg/K)
+                warm_water_demand_in_watt = (
+                        (35 - 10) * heat_capacity_water * df_ww * (1000 / 3600)
+                )
+                self.value_list = warm_water_demand_in_watt.tolist()
         else:
-            main_path = get_project_root()
-            df = pd.read_pickle(
-                os.path.join(
-                    main_path,
-                    "thermal_building_model",
-                    "input",
-                    "bds_in_DENI03403000SEC5291",
-                    str(self.building_id) + ".pkl",
-                ),
-            )
-            df_ww=df["Warm Water_HH1"]
+            df_ww =  self.value_list
             heat_capacity_water = 4.18  # [kJ/(kg/K)
             warm_water_demand_in_watt = (
                     (35 - 10) * heat_capacity_water * df_ww * (1000 / 3600)
             )
-            self.value_list = warm_water_demand_in_watt
+            self.value_list = warm_water_demand_in_watt.tolist()
