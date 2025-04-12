@@ -491,7 +491,7 @@ def main():
         date_time_index = solph.create_time_index(2025, number=number_of_time_steps - 1)
         data.index = date_time_index
 
-        typical_periods = 24
+        typical_periods = 30
         hours_per_period = 24
 
         aggregation1 = tsam.TimeSeriesAggregation(
