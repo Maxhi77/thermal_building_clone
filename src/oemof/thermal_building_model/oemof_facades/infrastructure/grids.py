@@ -1,5 +1,6 @@
 from oemof import solph
 from typing import Optional, Union, List
+import copy
 from oemof.thermal_building_model.oemof_facades.base_component import  InvestmentComponents
 from dataclasses import dataclass, field
 from oemof.thermal_building_model.oemof_facades.base_component import GridComponents
@@ -125,6 +126,7 @@ class Grid:
             flow_into_grid = None
             flow_into_grid_co2 = None
             flow_into_grid_revenue = None
+
         return {"capacity":capacity,
                 "investment_cost":investment_cost,
                 "investment_co2":investment_co2,
@@ -172,13 +174,13 @@ class Grid:
 class GasGrid(Grid):
     name: str = "Gas"
     primary_energy_factor: float = 6.2
-    operation_grid: GridComponents = field(default_factory=lambda: gas_grid_config)
+    operation_grid: GridComponents = field(default_factory=lambda: copy.deepcopy(gas_grid_config))
 
 @dataclass
 class ElectricityGrid(Grid):
     name: str = "Electricity"
     primary_energy_factor: float = 3.8
-    operation_grid: GridComponents = field(default_factory=lambda: electricity_grid_config)
+    operation_grid: GridComponents = field(default_factory=lambda: copy.deepcopy(electricity_grid_config))
 
 @dataclass
 class HeatGrid(Grid):
@@ -186,5 +188,5 @@ class HeatGrid(Grid):
     max_supply_temperature: float = 135.0
     min_supply_temperature: float = 80.0
     primary_energy_factor: float = 6.1
-    operation_grid: GridComponents = field(default_factory=lambda: heat_grid_config)
-    investment_component: InvestmentComponents = field(default_factory=lambda: heat_grid_config_inv)
+    operation_grid: GridComponents = field(default_factory=lambda: copy.deepcopy(heat_grid_config))
+    investment_component: InvestmentComponents = field(default_factory=lambda: copy.deepcopy(heat_grid_config_inv))
