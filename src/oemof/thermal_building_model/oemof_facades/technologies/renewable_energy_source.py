@@ -6,13 +6,13 @@ from oemof.thermal_building_model.helpers.path_helper import get_project_root
 import pandas as pd
 import os
 from dataclasses import dataclass, field
-
+import copy
 from oemof.thermal_building_model.input.economics.investment_components import pv_system_config
 @dataclass
 class RenewableEnergySource(BaseComponent):
     nominal_power: Optional[float] = None
     investment_component: Optional[InvestmentComponents] = None
-    fixed_data : Optional[List[float]] = None
+    value_list : Optional[List[float]] = None
 
     def create_source(self, output_bus: Optional[Bus] = None):
         """Creates a solph source with working_rate as variable cost and demand_rate added."""
@@ -20,15 +20,16 @@ class RenewableEnergySource(BaseComponent):
         self.output_bus = output_bus
         if self.investment:
             epc = self.investment_component.calculate_epc()  # Get EPC from economics model
-
+            print("pv_system:"+str(epc))
             return solph.components.Source(
                 label=self.oemof_component_name ,
                 outputs={output_bus: solph.Flow(
-                    fix = self.fixed_data,
+                    fix = self.value_list,
                     nominal_value= solph.Investment(ep_costs=epc,
                                                     maximum=self.investment_component.maximum_capacity,
                                                     minimum=self.investment_component.minimum_capacity,
                                                     offset=self.investment_component.cost_offset,
+                                                    lifetime=self.investment_component.lifetime,
                                                     nonconvex=True,
 
                                      custom_attributes={
@@ -48,7 +49,7 @@ class RenewableEnergySource(BaseComponent):
                 label=self.oemof_component_name ,
                 outputs={
                     output_bus: solph.Flow(
-                        fix=self.fixed_data,
+                        fix=self.value_list,
                         nominal_value=self.nominal_power)
                 }
             )
@@ -65,9 +66,12 @@ class RenewableEnergySource(BaseComponent):
 
     def get_capacity(self,results, component):
         if self.investment:
-            return (solph.views.node(results, self.output_bus)[
-                "scalars"][ ((component, self.output_bus), "invest")],
-                    solph.views.node(results, self.output_bus)["scalars"].get(((component, self.output_bus), "invest_status"), 0))
+            if self.investment_component.multiperiod:
+                return (results[component, self.output_bus]["period_scalars"]["invest"].sum(),1 if results[component, self.output_bus]["period_scalars"]["invest"].sum()>0 else 0)
+            else:
+                return (solph.views.node(results, self.output_bus)[
+                    "scalars"][ ((component, self.output_bus), "invest")],
+                        solph.views.node(results, self.output_bus)["scalars"].get(((component, self.output_bus), "invest_status"), 0))
         else:
             return component.outputs[self.output_bus].nominal_capacity,0
 
@@ -91,11 +95,11 @@ class RenewableEnergySource(BaseComponent):
 @dataclass
 class PVSystem(RenewableEnergySource):
     name: str = "PVSystem"
-    investment_component: InvestmentComponents = field(default_factory=lambda: pv_system_config)
+    investment_component: InvestmentComponents = field(default_factory=lambda: copy.deepcopy(pv_system_config))
     def __post_init__(self):
-        if self.fixed_data is None:
+        if self.value_list is None:
             main_path = get_project_root()
-            self.fixed_data = pd.read_csv(
+            self.value_list = pd.read_csv(
                 os.path.join(
                     main_path,
                     "thermal_building_model",
@@ -104,3 +108,8 @@ class PVSystem(RenewableEnergySource):
                     "pvwatts_hourly_1kW.csv",
                 )
             )["AC System Output (W)"] / 1000
+    def calculate_max_pv_size_based_area(self, area):
+        installable_power_per_module_area_wp_per_m2 = 0.205 * 1000
+        return installable_power_per_module_area_wp_per_m2 *area
+    def update_maximum_investment_pv_capacity_based_on_area(self,area):
+        self.investment_component.maximum_capacity=self.calculate_max_pv_size_based_area(area)
