@@ -41,7 +41,7 @@ class Converter(BaseComponent):
                                              "offset": self.investment_component.co2_offset if self.investment_component else 0.00,
                                               "cost": self.investment_component.co2_per_capacity if self.investment_component else 0.00
                                               }
-                                      }
+                                    }
                         ),
                     )
                 }
@@ -56,17 +56,23 @@ class Converter(BaseComponent):
                         nominal_value=self.nominal_power)
                 }
             )
-    def post_process(self,results,component,converter):
+    def post_process(self,results,component,converter,heat_carrier,carrier_converted):
         capacity, invest_status = self.get_capacity(results,component)
         investment_cost = self.get_investment_cost(capacity,invest_status)
         investment_co2 = self.get_investment_co2(capacity,invest_status)
-        into_converter = self.get_flow_into_converter(results,component)
-        out_converter = self.get_flow_out_converter(results,component,converter)
+        into_converter = self.get_flow_into_converter(results,carrier_converted,converter)
+        out_converter = self.get_flow_out_converter(results,component,converter,heat_carrier)
+        sum_out_converter = [value.sum() for key, value in out_converter.items()]
+        sum_into_converter =[value.sum() for key, value in into_converter.items()]
+
+        total_efficiency = sum(sum_out_converter) /sum(sum_into_converter)
+
         return {"capacity":capacity,
                 "investment_cost":investment_cost,
                 "investment_co2":investment_co2,
                 "flow_into_converter":into_converter,
-                "flow_from_converter":out_converter}
+                "flow_from_converter":out_converter,
+                "total_efficiency":total_efficiency}
     def get_capacity(self,results,component):
         if self.investment:
             if self.investment_component.multiperiod:
@@ -91,18 +97,25 @@ class Converter(BaseComponent):
             return capacity * self.investment_component.co2_per_capacity + self.investment_component.co2_offset * invest_status
         else:
             return 0
-    def get_flow_into_converter(self,results,component):
-        return results[component, self.bus]["sequences"]["flow"]
+    def get_flow_into_converter(self,results,carrier_converted,converter):
+        return {conv.label: results[carrier_converted, conv]["sequences"]["flow"]
+                 for conv in converter}
 
-    def get_flow_out_converter(self,results,component,converter):
-        return {key.label : results[self.bus, key]["sequences"]["flow"] for key in converter}
+    def get_flow_out_converter(self,results,component,converter,heat_carrier):
+        return {conv.label: results[conv, heat_carrier[hc]]["sequences"]["flow"]
+                 for conv in converter for hc in heat_carrier
+                 if (conv, heat_carrier[hc]) in results}
+
+    def get_converted_carrier_flow_into_component(self,results,component,carrier_converted):
+        carrier_converted
+
 
 @dataclass
 class GasHeater(Converter):
     name: str = "GasHeater"
     nominal_power: Optional[float] = 10000
     heat_carrier_bus: Optional[dict[Bus]] = None
-    efficiency: Optional[float] = 0.99
+    efficiency: Optional[float] = 0.95
     investment_component: InvestmentComponents = field(default_factory=lambda: copy.deepcopy(gas_heater_config))
 
     def create_converters(self,
@@ -118,9 +131,39 @@ class GasHeater(Converter):
                 outputs={
                     bus: solph.Flow(),
                 },
-                conversion_factors={gas_bus:  self.efficiency},
+                conversion_factors={bus:  self.efficiency},
             ))
         return converters
+
+@dataclass
+class CHP(Converter):
+    name: str = "CHPElect"
+    nominal_power: Optional[float] = 10000
+    heat_carrier_bus: Optional[dict[Bus]] = None
+    electrical_carrier_bus: Optional[dict[Bus]] = None
+    thermal_efficiency: Optional[float] = 0.95
+    electrical_efficiency: Optional[float] = 0.95
+    investment_component: InvestmentComponents = field(default_factory=lambda: copy.deepcopy(gas_heater_config))
+
+    def create_converters(self,
+                          chp_bus: Bus,
+                          gas_bus:Bus,
+                          heat_carrier_bus: Optional[dict[Bus]]):
+        converters = []
+        for temperature, bus in heat_carrier_bus.items():
+            converters.append(solph.components.Converter(
+                label=f"{self.name.lower()}_converter_to_{temperature}",
+                inputs={gas_bus: solph.Flow(),
+                        chp_bus: solph.Flow()},
+                outputs={
+                    bus: solph.Flow(),
+                    self.electrical_carrier_bus: solph.Flow(),
+                },
+                conversion_factors={bus: self.thermal_efficiency,
+                                    self.electrical_carrier_bus: self.electrical_efficiency},
+            ))
+        return converters
+
 @dataclass
 class AirHeatPump(Converter):
     name: str = "AirHeatPump"
