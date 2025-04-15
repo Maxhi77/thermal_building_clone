@@ -49,10 +49,12 @@ class Demand:
                 )
                 }
             )
-    def post_process(self):
-        return {"flow_from_grid": self.value_list,
-         "sum": sum(self.value_list)}
+    def post_process(self,results,component):
+        return {"flow_from_grid": self.get_flow_from_grid(results,component),
+         "sum": sum(self.get_flow_from_grid(results,component))}
 
+    def get_flow_from_grid(self,results,component):
+        return results[self.bus, component]["sequences"]["flow"]
     def get_oemof_component_name(self):
         return self.oemof_component_name
 @dataclass
