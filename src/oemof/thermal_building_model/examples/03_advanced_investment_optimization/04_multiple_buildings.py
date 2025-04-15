@@ -79,8 +79,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
     dataclasses = {}
     components = {}
     for index, row in combined_cluster.iterrows():
-        if index >=2:
-            continue
+
         building_id =row['building_id']
         building_in_cluster =row['buildings_in_cluster']
         building_in_cluster=1
@@ -373,8 +372,6 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
 def process_cluster(cluster_df, building_type, epw_path, directory_path, data, refurbish, number_of_time_steps,data_classes_comp,ev):
     for index, row in cluster_df.iterrows():
-        if index >=2:
-            continue
         building_id = row['building_id']
         tabula_year_class = row['tabula_year_class']
         building_floor_area = row['net_floor_area']
@@ -453,13 +450,12 @@ def run_main(refurbish):
     sfh_cluster_path = os.path.join(base_path, ueu, 'sfh_cluster.pkl')
     with open(sfh_cluster_path, 'rb') as f:
         sfh_cluster = pickle.load(f)
-    if False:
-        mfh_cluster_path = os.path.join(base_path, ueu, 'mfh_cluster.pkl')
-        with open(mfh_cluster_path, 'rb') as f:
-            mfh_cluster = pickle.load(f)
-    combined_cluster = pd.concat([sfh_cluster])
+    mfh_cluster_path = os.path.join(base_path, ueu, 'mfh_cluster.pkl')
+    with open(mfh_cluster_path, 'rb') as f:
+        mfh_cluster = pickle.load(f)
+    combined_cluster = pd.concat([sfh_cluster,mfh_cluster])
     results_loop_to_save = {}
-    ev = "EV"
+    ev = "no_EV"
     buildings_connected="con" #or uncon
     if True:
         print(refurbish)
@@ -488,18 +484,17 @@ def run_main(refurbish):
             ev=ev
         )
 
-        if False:
-            data,data_classes_comp = process_cluster(
-                cluster_df=mfh_cluster,
-                building_type="MFH",
-                epw_path=epw_path,
-                directory_path=directory_path,
-                data=data,
-                refurbish=refurbish,
-                number_of_time_steps=number_of_time_steps,
-                data_classes_comp = data_classes_comp,
-                ev =ev
-            )
+        data,data_classes_comp = process_cluster(
+            cluster_df=mfh_cluster,
+            building_type="MFH",
+            epw_path=epw_path,
+            directory_path=directory_path,
+            data=data,
+            refurbish=refurbish,
+            number_of_time_steps=number_of_time_steps,
+            data_classes_comp = data_classes_comp,
+            ev =ev
+        )
         main_path = get_project_root()
         location = calculate_gain_by_sun.Location(
             epwfile_path=os.path.join(
@@ -637,8 +632,6 @@ if __name__ == "__main__":
     refurbish =["no_refurbishment","usual_refurbishment","advanced_refurbishment"]  # Beispiel #"GEG_standard"
     import multiprocessing
     import os
-    # Multiprocessing-Pool erstellen
-    run_main("no_refurbishment")
-    if False:
+    if True:
         with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
             pool.map(run_main, refurbish)
