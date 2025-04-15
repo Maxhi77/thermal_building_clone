@@ -27,7 +27,7 @@ import tsam.timeseriesaggregation as tsam
 
 import pandas as pd
 #  create solver
-def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_comp,buildings_connected,sfh_cluster,mfh_cluster):
+def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_comp,buildings_connected,combined_cluster):
 
     solver = "gurobi"
     es = solph.EnergySystem(
@@ -78,35 +78,36 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
     dataclasses = {}
     components = {}
-    combined_cluster = pd.concat([sfh_cluster, mfh_cluster])
     for index, row in combined_cluster.iterrows():
-
+        if index >=2:
+            continue
         building_id =row['building_id']
         building_in_cluster =row['buildings_in_cluster']
+        building_in_cluster=1
         dataclasses[building_id] = {}
         components[building_id] = {}
         electricity_carrier_dataclass_building = ElectricityCarrier(name="e_carrier_"+str(building_id))
         electricity_carrier_bus_building = electricity_carrier_dataclass_building.get_bus()
         if buildings_connected == "con":
-            grid_into_converter_building = Converter(label="e_into_grid_"+str(building_id),
+            grid_into_converter_building = Converter(label="conv_e_into_grid_"+str(building_id),
                                                   inputs={electricity_carrier_bus_building: solph.flows.Flow()},
                                                   outputs={electricity_carrier_bus: solph.flows.Flow()},
-                                                  conversion_factors={electricity_carrier_bus_building: 1/building_in_cluster * 0.98})
-            grid_from_converter_building = Converter(label="e_from_grid_"+str(building_id),
+                                                  conversion_factors={electricity_carrier_bus_building: 1/building_in_cluster * 0.975})
+            grid_from_converter_building = Converter(label="conv_e_from_grid_"+str(building_id),
                                                   inputs={electricity_carrier_bus: solph.flows.Flow()},
                                                   outputs={electricity_carrier_bus_building: solph.flows.Flow()},
-                                                  conversion_factors={electricity_carrier_bus_building: 1/ building_in_cluster * 0.98})
+                                                  conversion_factors={electricity_carrier_bus_building: 1/ building_in_cluster * 0.975})
         elif buildings_connected =="uncon":
-            grid_into_converter_building = Converter(label="e_into_grid_" + str(building_id),
+            grid_into_converter_building = Converter(label="conv_e_into_grid_" + str(building_id),
                                                      inputs={electricity_carrier_bus_building: solph.flows.Flow()},
                                                      outputs={electricity_grid_bus_into_grid: solph.flows.Flow()},
                                                      conversion_factors={
-                                                         electricity_carrier_bus_building: 1 / building_in_cluster * 0.98})
-            grid_from_converter_building = Converter(label="e_from_grid_" + str(building_id),
+                                                         electricity_carrier_bus_building: 1 / building_in_cluster })
+            grid_from_converter_building = Converter(label="conv_e_from_grid_" + str(building_id),
                                                      inputs={electricity_grid_bus_from_grid: solph.flows.Flow()},
                                                      outputs={electricity_carrier_bus_building: solph.flows.Flow()},
                                                      conversion_factors={
-                                                         electricity_carrier_bus_building: 1 / building_in_cluster * 0.98})
+                                                         electricity_carrier_bus_building: 1 / building_in_cluster })
         else:
             break
 
@@ -122,6 +123,9 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
         components[building_id]["grid_into_converter_building"] = grid_into_converter_building
         components[building_id]["grid_from_converter_building"] = grid_from_converter_building
         components[building_id]["electricity_demand"] = electricity_demand
+
+        max_required_heating = max(data["ww_demand_"+str(building_id)] + data["building_"+str(building_id)]) * 8
+
 
         heat_carrier_temperature_levels = [40]
         heat_carrier_dataclass = HeatCarrier(name="h_carrier_"+str(building_id),
@@ -142,7 +146,12 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
 
         print(building_id)
-        hot_water_tank_config_building =  copy.deepcopy(hot_water_tank_config)
+        hot_water_tank_config_building = copy.deepcopy(hot_water_tank_config)
+        if data_classes_comp.loc["building", building_id] == "SFH":
+            hot_water_tank_config_building.maximum_capacity = 20
+        elif data_classes_comp.loc["building", building_id] == "MFH":
+            hot_water_tank_config_building.maximum_capacity = 60
+
         hot_water_tank_config_building.set_reference_unit_quantity(reference_unit_quantity=building_in_cluster)
         hot_water_tank_dataclass = HotWaterTank(
             name="heat_storage_"+str(building_id),
@@ -159,6 +168,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
         dataclasses[building_id]["hot_water_tank_dataclass"] = hot_water_tank_dataclass
         components[building_id]["hot_water_tank"] = hot_water_tank
         air_heat_pump_config_building =  copy.deepcopy(air_heat_pump_config)
+        air_heat_pump_config_building.maximum_capacity = max_required_heating
         air_heat_pump_config_building.set_reference_unit_quantity(reference_unit_quantity=building_in_cluster)
         air_heat_pump_dataclass = AirHeatPump(heat_carrier_bus= heat_carrier_dataclass.get_bus(),
                                               investment=True,
@@ -175,19 +185,22 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
         components[building_id]["air_heat_pump_converters"] = air_heat_pump_converters
         components[building_id]["air_heat_pump"] = air_heat_pump
         components[building_id]["air_heat_pump_bus"] = air_heat_pump_bus
-        gas_carrier_dataclass_building = ElectricityCarrier(name="g_carrier_"+str(building_id))
+
+        gas_carrier_dataclass_building = GasCarrier(name="g_carrier_"+str(building_id))
         gas_carrier_bus_building = gas_carrier_dataclass_building.get_bus()
-        grid_gas_into_converter_building = Converter(label="g_into_grid_"+str(building_id),
+        grid_gas_into_converter_building = Converter(label="conv_g_into_grid_"+str(building_id),
                                               inputs={gas_carrier_bus_building: solph.flows.Flow()},
                                               outputs={gas_bus: solph.flows.Flow()},
-                                              conversion_factors={gas_carrier_bus_building:1/building_in_cluster})
-        grid_gas_from_converter_building = Converter(label="g_from_grid_"+str(building_id),
+                                              conversion_factors={gas_carrier_bus_building: 1/building_in_cluster})
+        grid_gas_from_converter_building = Converter(label="conv_g_from_grid_"+str(building_id),
                                               inputs={gas_bus: solph.flows.Flow()},
                                               outputs={gas_carrier_bus_building: solph.flows.Flow()},
-                                              conversion_factors={gas_carrier_bus_building:1/building_in_cluster})
+                                              conversion_factors={gas_carrier_bus_building: 1/building_in_cluster})
 
         gas_heater_config_building =  copy.deepcopy(gas_heater_config)
+        gas_heater_config_building.maximum_capacity = max_required_heating
         gas_heater_config_building.set_reference_unit_quantity(reference_unit_quantity=building_in_cluster)
+
         gas_heater_dataclass = GasHeater(investment=True,
                                          name="gas_heater_"+str(building_id),
                                          investment_component=gas_heater_config_building)
@@ -262,15 +275,15 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
     model = solph.Model(es)
 
-    if False:
+    if True:
         # Create the graph from the energy system (es)
         graph = create_nx_graph(es)
         # Draw the graph
-        plt.figure(figsize=(14, 10))  # Set figure size
+        plt.figure(figsize=(18, 14))  # Set figure size
         nx.draw(graph, with_labels=True, font_size=6)
         plt.show()
     if co2_new is None:
-        model = solph.constraints.additional_total_limit(model, "co2", limit=10000000)
+        model = solph.constraints.additional_total_limit(model, "co2", limit=1500)
     else:
         model = solph.constraints.additional_total_limit(model, "co2", limit=co2_new)
     # Show the graph
@@ -303,15 +316,23 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
             final_results[building_id][dataclasses[building_id]["battery_dataclass"].name] = dataclasses[building_id]["battery_dataclass"].post_process(results,components[building_id]["battery"])
 
-            final_results[building_id][dataclasses[building_id]["gas_heater_dataclass"].name] = dataclasses[building_id]["gas_heater_dataclass"].post_process(results,components[building_id]["gas_heater"],components[building_id]["gas_heater_converters"])
+            final_results[building_id][dataclasses[building_id]["gas_heater_dataclass"].name] = dataclasses[building_id]["gas_heater_dataclass"].post_process(results,
+                                                                                                                                                              components[building_id]["gas_heater"],
+                                                                                                                                                              components[building_id]["gas_heater_converters"],
+                                                                                                                                                              components[building_id]["heat_carrier_bus"],
+                                                                                                                                                              components[building_id]["gas_carrier_bus_building"])
 
-            final_results[building_id][dataclasses[building_id]["air_heat_pump_dataclass"].name] = dataclasses[building_id]["air_heat_pump_dataclass"].post_process(results,components[building_id]["air_heat_pump"],components[building_id]["air_heat_pump_converters"])
+            final_results[building_id][dataclasses[building_id]["air_heat_pump_dataclass"].name] = dataclasses[building_id]["air_heat_pump_dataclass"].post_process(results,
+                                                                                                                                                                    components[building_id]["air_heat_pump"],
+                                                                                                                                                                    components[building_id]["air_heat_pump_converters"],
+                                                                                                                                                                    components[building_id]["heat_carrier_bus"],
+                                                                                                                                                                    components[building_id]["electricity_carrier_bus_building"])
 
             final_results[building_id][dataclasses[building_id]["building_dataclass"].name] = dataclasses[building_id]["building_dataclass"].post_process(results,components[building_id]["building_component"])
 
-            final_results[building_id][dataclasses[building_id]["electricity_demand_dataclass_building"].name] = dataclasses[building_id]["electricity_demand_dataclass_building"].post_process()
+            final_results[building_id][dataclasses[building_id]["electricity_demand_dataclass_building"].name] = dataclasses[building_id]["electricity_demand_dataclass_building"].post_process(results,components[building_id]["electricity_demand"])
 
-            final_results[building_id][dataclasses[building_id]["heat_demand_dataclass"].name] = dataclasses[building_id]["heat_demand_dataclass"].post_process()
+            final_results[building_id][dataclasses[building_id]["heat_demand_dataclass"].name] = dataclasses[building_id]["heat_demand_dataclass"].post_process(results,components[building_id]["heat_demand"])
 
         co2_investment = 0
         for building_id in components:
@@ -352,7 +373,8 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
 def process_cluster(cluster_df, building_type, epw_path, directory_path, data, refurbish, number_of_time_steps,data_classes_comp,ev):
     for index, row in cluster_df.iterrows():
-
+        if index >=2:
+            continue
         building_id = row['building_id']
         tabula_year_class = row['tabula_year_class']
         building_floor_area = row['net_floor_area']
@@ -427,19 +449,20 @@ def run_main(refurbish):
     base_path = os.path.dirname(os.path.abspath(__file__))
     ueu = "processed_bds_in_DENI03403000SEC5658"
     directory_path =os.path.join(base_path, ueu)
-    sfh_cluster_path = os.path.join(base_path, ueu, 'sfh_cluster.pkl')
-    mfh_cluster_path = os.path.join(base_path, ueu, 'mfh_cluster.pkl')
     number_of_time_steps = 8760
+    sfh_cluster_path = os.path.join(base_path, ueu, 'sfh_cluster.pkl')
     with open(sfh_cluster_path, 'rb') as f:
         sfh_cluster = pickle.load(f)
-    with open(mfh_cluster_path, 'rb') as f:
-        mfh_cluster = pickle.load(f)
+    if False:
+        mfh_cluster_path = os.path.join(base_path, ueu, 'mfh_cluster.pkl')
+        with open(mfh_cluster_path, 'rb') as f:
+            mfh_cluster = pickle.load(f)
+    combined_cluster = pd.concat([sfh_cluster])
     results_loop_to_save = {}
-    ev = "no_EV"
+    ev = "EV"
     buildings_connected="con" #or uncon
     if True:
         print(refurbish)
-
 
         main_path = get_project_root()
 
@@ -465,18 +488,18 @@ def run_main(refurbish):
             ev=ev
         )
 
-
-        data,data_classes_comp = process_cluster(
-            cluster_df=mfh_cluster,
-            building_type="MFH",
-            epw_path=epw_path,
-            directory_path=directory_path,
-            data=data,
-            refurbish=refurbish,
-            number_of_time_steps=number_of_time_steps,
-            data_classes_comp = data_classes_comp,
-            ev =ev
-        )
+        if False:
+            data,data_classes_comp = process_cluster(
+                cluster_df=mfh_cluster,
+                building_type="MFH",
+                epw_path=epw_path,
+                directory_path=directory_path,
+                data=data,
+                refurbish=refurbish,
+                number_of_time_steps=number_of_time_steps,
+                data_classes_comp = data_classes_comp,
+                ev =ev
+            )
         main_path = get_project_root()
         location = calculate_gain_by_sun.Location(
             epwfile_path=os.path.join(
@@ -508,7 +531,7 @@ def run_main(refurbish):
         )
 
 
-        final_results_ref, co2_ref = run_model(None, None,refurbish,data,aggregation1,t1_agg,data_classes_comp,buildings_connected,sfh_cluster, mfh_cluster)
+        final_results_ref, co2_ref = run_model(None, None,refurbish,data,aggregation1,t1_agg,data_classes_comp,buildings_connected,combined_cluster)
         co2_reduction_factor_ref = 1
         peak_reduction_factor_ref = 1
         results_loop_to_save[(co2_reduction_factor_ref, peak_reduction_factor_ref,refurbish)] = {
@@ -522,22 +545,26 @@ def run_main(refurbish):
         }
         co2_reference = co2_ref
         peak_reference = final_results_ref["Electricity"]["peak_from_grid"]
-        co2_reduction_factors = [0.9,0.8,0.7,0.6,0.5]
+        co2_reduction_factors = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1] # [0.95,0.9,0.85,0.8,0.75,0.7,0.65,0.6,0.5]
         peak_reduction_factors = [1,0.9,0.8,0.7,0.6,0.5,0.4]
         peak_calculation_worked = True
         co2_calculation_worked = True
         for co2_reduction_factor in co2_reduction_factors:
             if peak_calculation_worked == False and co2_calculation_worked == False:
                 break
-
-            co2_new = co2_reference * co2_reduction_factor
+            if co2_reference > 0:
+                co2_new = co2_reference * co2_reduction_factor
+            else:
+                co2_new = co2_reference * (1+1-co2_reduction_factor)
             for peak_reduction_factor in peak_reduction_factors:
                 peak_calculation_worked=True
                 print("refurbish:"+ str(refurbish))
                 print("co2: "+str(co2_reduction_factor))
                 print("peak: " + str(peak_reduction_factor))
                 peak_new = peak_reference * peak_reduction_factor
-                final_results, co2  = run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_comp,buildings_connected,sfh_cluster, mfh_cluster)
+
+
+                final_results, co2  = run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_comp,buildings_connected,combined_cluster)
                 if final_results is None:
                     results_loop_to_save[(co2_reduction_factor, peak_reduction_factor, refurbish)] = {
                         "results": None,
@@ -568,33 +595,50 @@ def run_main(refurbish):
                         "peak": peak
                     }
 
-        file_path="results_"+str(ueu)+"_"+str(refurbish)+"_"+str(ev)+"_"+str(ev)+"_"+str(buildings_connected)+".pkl"
-        if os.path.exists(file_path):
-            # If the file exists, open it and load the data
-            with open(file_path, "rb") as f:
-                existing_results = pickle.load(f)
-            print(f"Loaded existing results for {file_path}")
+            file_path="results_"+str(ueu)+"_"+str(refurbish)+"_"+str(ev)+"_"+str(ev)+"_"+str(buildings_connected)+".pkl"
+            if os.path.exists(file_path):
+                # If the file exists, open it and load the data
+                with open(file_path, "rb") as f:
+                    existing_results = pickle.load(f)
+                print(f"Loaded existing results for {file_path}")
 
-            # Now you can add more data to existing_results
-            existing_results.update(results_loop_to_save)  # Example of adding new data
+                # Now you can add more data to existing_results
+                existing_results.update(results_loop_to_save)  # Example of adding new data
 
-        else:
-            # If the file doesn't exist, create it and save the results
-            existing_results = results_loop_to_save
-            print(f"New results created for {file_path}")
+            else:
+                # If the file doesn't exist, create it and save the results
+                existing_results = results_loop_to_save
+                print(f"New results created for {file_path}")
 
-        # Save the updated or new results back to the pickle file
-        with open(file_path, "wb") as f:
-            pickle.dump(existing_results, f)
+            # Save the updated or new results back to the pickle file
+            with open(file_path, "wb") as f:
+                pickle.dump(existing_results, f)
+    file_path = "results_" + str(ueu) + "_" + str(refurbish) + "_" + str(ev) + "_" + str(ev) + "_" + str(
+        buildings_connected) + ".pkl"
+    if os.path.exists(file_path):
+        # If the file exists, open it and load the data
+        with open(file_path, "rb") as f:
+            existing_results = pickle.load(f)
+        print(f"Loaded existing results for {file_path}")
+
+        # Now you can add more data to existing_results
+        existing_results.update(results_loop_to_save)  # Example of adding new data
+
+    else:
+        # If the file doesn't exist, create it and save the results
+        existing_results = results_loop_to_save
+        print(f"New results created for {file_path}")
+
     # Save the updated or new results back to the pickle file
-    if results_loop_to_save is not None:
-        with open("results_"+str(ueu)+"_.pkl", "wb") as f:
-            pickle.dump(results_loop_to_save, f)
+    with open(file_path, "wb") as f:
+        pickle.dump(existing_results, f)
 
 if __name__ == "__main__":
     refurbish =["no_refurbishment","usual_refurbishment","advanced_refurbishment"]  # Beispiel #"GEG_standard"
     import multiprocessing
     import os
     # Multiprocessing-Pool erstellen
-    with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
-        pool.map(run_main, refurbish)
+    run_main("no_refurbishment")
+    if False:
+        with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+            pool.map(run_main, refurbish)
