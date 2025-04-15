@@ -270,4 +270,6 @@ def calculate_average_values():
         print(f"\nKey: {key}")
         for field, avg in metrics.items():
             print(f"  {field}: {avg:.2f}")
+with open("results_processed_bds_in_DENI03403000SEC5658/results_processed_bds_in_DENI03403000SEC5658_no_refurbishment_no_EV_con.pkl", "rb") as f:
+    reference_building = pickle.load(f)
 plot_multi_strategy_with_reference_as_pareto()

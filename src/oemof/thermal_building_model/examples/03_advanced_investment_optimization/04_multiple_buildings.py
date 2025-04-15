@@ -282,7 +282,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
         nx.draw(graph, with_labels=True, font_size=6)
         plt.show()
     if co2_new is None:
-        model = solph.constraints.additional_total_limit(model, "co2", limit=1500)
+        model = solph.constraints.additional_total_limit(model, "co2", limit=100000000)
     else:
         model = solph.constraints.additional_total_limit(model, "co2", limit=co2_new)
     # Show the graph
