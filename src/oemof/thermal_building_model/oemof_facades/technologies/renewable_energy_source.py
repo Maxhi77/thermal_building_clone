@@ -62,7 +62,8 @@ class RenewableEnergySource(BaseComponent):
         return {"capacity":capacity,
                 "investment_cost":investment_cost,
                 "investment_co2":investment_co2,
-                "flow_from_grid":flow_from_grid}
+                "flow_from_grid":flow_from_grid,
+                "sum":flow_from_grid.sum()}
 
     def get_capacity(self,results, component):
         if self.investment:
