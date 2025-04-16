@@ -79,7 +79,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
     dataclasses = {}
     components = {}
     for index, row in combined_cluster.iterrows():
-        if index >=1:
+        if index>1:
             continue
         building_id =row['building_id']
         building_in_cluster =row['buildings_in_cluster']
@@ -101,12 +101,12 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
                                                      inputs={electricity_carrier_bus_building: solph.flows.Flow()},
                                                      outputs={electricity_grid_bus_into_grid: solph.flows.Flow()},
                                                      conversion_factors={
-                                                         electricity_carrier_bus_building: 1 / building_in_cluster })
+                                                         electricity_carrier_bus_building: 1 / building_in_cluster * 0.975})
             grid_from_converter_building = Converter(label="conv_e_from_grid_" + str(building_id),
                                                      inputs={electricity_grid_bus_from_grid: solph.flows.Flow()},
                                                      outputs={electricity_carrier_bus_building: solph.flows.Flow()},
                                                      conversion_factors={
-                                                         electricity_carrier_bus_building: 1 / building_in_cluster })
+                                                         electricity_carrier_bus_building: 1 / building_in_cluster * 0.975})
         else:
             break
 
@@ -234,7 +234,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
 
 
-        building_dataclass = data_classes_comp.loc["building", building_id]
+        building_dataclass = copy.deepcopy(data_classes_comp.loc["building", building_id])
         building_dataclass.value_list = data["building_"+str(building_id)]
         building_dataclass.set_number_of_buildings_in_cluster(building_in_cluster)
         building_dataclass.bus=heat_carrier_dataclass.get_bus()
@@ -243,7 +243,8 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
         dataclasses[building_id]["building_dataclass"] = building_dataclass
         components[building_id]["building_component"] = building_component
-        pv_dataclass = data_classes_comp.loc["pv_system", building_id]
+
+        pv_dataclass = copy.deepcopy(data_classes_comp.loc["pv_system", building_id])
         pv_dataclass_config_building = copy.deepcopy(pv_system_config)
         pv_dataclass_config_building.set_reference_unit_quantity(reference_unit_quantity=building_in_cluster)
         pv_dataclass.investment_component=pv_dataclass_config_building
@@ -262,11 +263,14 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
             # Check if the component is a list (which it should not be, based on the structure)
             if isinstance(comp_value, list):
                 for item in comp_value:
-                    es.add(item)  # Process each component in the list
+                    es.add(item)
+                    print(item)
+                    # Process each component in the list
             # Check if the component is a dictionary, meaning it has nested components
             elif isinstance(comp_value, dict):
                 # If it's a dictionary, iterate over its key-value pairs
                 for key, value in comp_value.items():
+                    print(value)
                     es.add(value)
             else:
                 # Otherwise, just add the component directly
@@ -284,6 +288,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
     if co2_new is None:
         model = solph.constraints.additional_total_limit(model, "co2", limit=144000000)
     else:
+        print("new co2 VALUE:"+str(co2_new))
         model = solph.constraints.additional_total_limit(model, "co2", limit=co2_new)
     # Show the graph
     # Show the graph
@@ -335,6 +340,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
         co2_investment = 0
         for building_id in components:
+
             # For each component, sum up the CO2 contributions to the overall system
             co2_investment += final_results[building_id][dataclasses[building_id]["battery_dataclass"].name]["investment_co2"]
             co2_investment += final_results[building_id][dataclasses[building_id]["hot_water_tank_dataclass"].name]["investment_co2"]
@@ -372,7 +378,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
 def process_cluster(cluster_df, building_type, epw_path, directory_path, data, refurbish, number_of_time_steps,data_classes_comp,ev):
     for index, row in cluster_df.iterrows():
-        if index >=1:
+        if index >1:
             continue
         building_id = row['building_id']
         tabula_year_class = row['tabula_year_class']
@@ -460,7 +466,6 @@ def run_main(refurbish):
     ev = "no_EV"
     buildings_connected="con" #or uncon
     if True:
-        print(refurbish)
 
         main_path = get_project_root()
 
@@ -542,19 +547,14 @@ def run_main(refurbish):
         }
         co2_reference = co2_ref
         peak_reference = final_results_ref["Electricity"]["peak_from_grid"]
-        co2_reduction_factors = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1] # [0.95,0.9,0.85,0.8,0.75,0.7,0.65,0.6,0.5]
-        peak_reduction_factors = [1,0.9,0.8,0.7,0.6,0.5,0.4]
-        peak_calculation_worked = True
-        co2_calculation_worked = True
+        co2_reduction_factors = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1] # [0.95,0.9,0.85,0.8,0.75,0.7,0.65,0.6,0.5] [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1]
+        peak_reduction_factors = [1,0.9,0.8,0.7,0.6,0.5,0.4] #[1,0.9,0.8,0.7,0.6,0.5,0.4]
         for co2_reduction_factor in co2_reduction_factors:
-            if peak_calculation_worked == False and co2_calculation_worked == False:
-                break
             if co2_reference > 0:
                 co2_new = co2_reference * co2_reduction_factor
             else:
                 co2_new = co2_reference * (1+1-co2_reduction_factor)
             for peak_reduction_factor in peak_reduction_factors:
-                peak_calculation_worked=True
                 print("refurbish:"+ str(refurbish))
                 print("co2: "+str(co2_reduction_factor))
                 print("peak: " + str(peak_reduction_factor))
@@ -571,12 +571,7 @@ def run_main(refurbish):
                         "totex": None,
                         "peak": None
                     }
-                    if peak_calculation_worked:
-                        peak_calculation_worked = False
-                        break
-                    else:
-                        co2_calculation_worked = False
-                        break
+
                 else:
                     peak_calculation_worked = True
                     totex = final_results["totex"]
@@ -591,26 +586,26 @@ def run_main(refurbish):
                         "totex": totex,
                         "peak": peak
                     }
+            if True:
+                file_path="results_"+str(ueu)+"_"+str(refurbish)+"_"+str(ev)+"_"+str(buildings_connected)+".pkl"
+                if os.path.exists(file_path):
+                    # If the file exists, open it and load the data
+                    with open(file_path, "rb") as f:
+                        existing_results = pickle.load(f)
+                    print(f"Loaded existing results for {file_path}")
 
-            file_path="results_"+str(ueu)+"_"+str(refurbish)+"_"+str(ev)+"_"+str(ev)+"_"+str(buildings_connected)+".pkl"
-            if os.path.exists(file_path):
-                # If the file exists, open it and load the data
-                with open(file_path, "rb") as f:
-                    existing_results = pickle.load(f)
-                print(f"Loaded existing results for {file_path}")
+                    # Now you can add more data to existing_results
+                    existing_results.update(results_loop_to_save)  # Example of adding new data
 
-                # Now you can add more data to existing_results
-                existing_results.update(results_loop_to_save)  # Example of adding new data
+                else:
+                    # If the file doesn't exist, create it and save the results
+                    existing_results = results_loop_to_save
+                    print(f"New results created for {file_path}")
 
-            else:
-                # If the file doesn't exist, create it and save the results
-                existing_results = results_loop_to_save
-                print(f"New results created for {file_path}")
-
-            # Save the updated or new results back to the pickle file
-            with open(file_path, "wb") as f:
-                pickle.dump(existing_results, f)
-    file_path = "results_" + str(ueu) + "_" + str(refurbish) + "_" + str(ev) + "_" + str(ev) + "_" + str(
+                # Save the updated or new results back to the pickle file
+                with open(file_path, "wb") as f:
+                    pickle.dump(existing_results, f)
+    file_path = "results_" + str(ueu) + "_" + str(refurbish) + "_" + str(ev) +"_" + str(
         buildings_connected) + ".pkl"
     if os.path.exists(file_path):
         # If the file exists, open it and load the data
@@ -631,11 +626,13 @@ def run_main(refurbish):
         pickle.dump(existing_results, f)
 
 if __name__ == "__main__":
-    refurbish =["no_refurbishment","usual_refurbishment","advanced_refurbishment"]  # Beispiel #"GEG_standard"
+    refurbishment =["no_refurbishment","usual_refurbishment","advanced_refurbishment"]  # Beispiel #"GEG_standard"
     import multiprocessing
     import os
 
-    run_main("no_refurbishment")
+    #run_main("no_refurbishment")
+    for refurbish in refurbishment:
+        run_main("usual_refurbishment")
     if False:
         with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
             pool.map(run_main, refurbish)

@@ -129,13 +129,13 @@ class Storage(BaseComponent):
 class HotWaterTank(Storage):
     name: str = "LayeredWaterTank"
     temperature_buses: Optional[Bus] = None
-    invest_relation_input_capacity: float = 0.2
-    invest_relation_output_capacity: float = 0.2
-    loss_rate: float = 0.01
-    charging_efficiency: float = 0.99
-    discharging_efficiency: float = 0.99
-    charging_capacity_rate: float = 0.2
-    discharging_capacity_rate: float = 0.2
+    invest_relation_input_capacity: float = 0.3
+    invest_relation_output_capacity: float = 0.3
+    loss_rate: float = 0.05
+    charging_efficiency: float = 0.98
+    discharging_efficiency: float = 0.98
+    charging_capacity_rate: float = 0.3
+    discharging_capacity_rate: float = 0.3
     # ambient_temperature: [dict[str, float], None] = None
     u_value: Optional[float] = 1.2
     min_storage_level:float = 0
@@ -185,11 +185,13 @@ class HotWaterTank(Storage):
 @dataclass
 class Battery(Storage):
     name: str = "Battery"
-    loss_rate: float = 0
+    loss_rate: float = 0.05
     nominal_capacity: float
+    invest_relation_input_capacity: float = 0.5
+    invest_relation_output_capacity: float = 0.5
     charging_capacity_rate: float= 1
     discharging_capacity_rate: float = 1
-    charging_efficiency: float = 0.98
+    charging_efficiency: float = 0.95
     discharging_efficiency: float = 0.95
     initial_soc: float = 0.5
     min_storage_level: float = 0
