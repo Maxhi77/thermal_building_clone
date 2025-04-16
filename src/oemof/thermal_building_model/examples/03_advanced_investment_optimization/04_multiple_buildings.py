@@ -79,10 +79,10 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
     dataclasses = {}
     components = {}
     for index, row in combined_cluster.iterrows():
-
+        if index >=1:
+            continue
         building_id =row['building_id']
         building_in_cluster =row['buildings_in_cluster']
-        building_in_cluster=1
         dataclasses[building_id] = {}
         components[building_id] = {}
         electricity_carrier_dataclass_building = ElectricityCarrier(name="e_carrier_"+str(building_id))
@@ -123,7 +123,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
         components[building_id]["grid_from_converter_building"] = grid_from_converter_building
         components[building_id]["electricity_demand"] = electricity_demand
 
-        max_required_heating = max(data["ww_demand_"+str(building_id)] + data["building_"+str(building_id)]) * 8
+        max_required_heating = max(data["ww_demand_"+str(building_id)] + data["building_"+str(building_id)]) * 4
 
 
         heat_carrier_temperature_levels = [40]
@@ -274,7 +274,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
     model = solph.Model(es)
 
-    if True:
+    if False:
         # Create the graph from the energy system (es)
         graph = create_nx_graph(es)
         # Draw the graph
@@ -282,7 +282,7 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
         nx.draw(graph, with_labels=True, font_size=6)
         plt.show()
     if co2_new is None:
-        model = solph.constraints.additional_total_limit(model, "co2", limit=100000000)
+        model = solph.constraints.additional_total_limit(model, "co2", limit=144000000)
     else:
         model = solph.constraints.additional_total_limit(model, "co2", limit=co2_new)
     # Show the graph
@@ -372,6 +372,8 @@ def run_model(co2_new,peak_new,refurbish,data,aggregation1,t1_agg,data_classes_c
 
 def process_cluster(cluster_df, building_type, epw_path, directory_path, data, refurbish, number_of_time_steps,data_classes_comp,ev):
     for index, row in cluster_df.iterrows():
+        if index >=1:
+            continue
         building_id = row['building_id']
         tabula_year_class = row['tabula_year_class']
         building_floor_area = row['net_floor_area']
@@ -509,7 +511,7 @@ def run_main(refurbish):
         date_time_index = solph.create_time_index(2025, number=number_of_time_steps - 1)
         data.index = date_time_index
 
-        typical_periods = 25
+        typical_periods = 20
         hours_per_period = 24
 
         aggregation1 = tsam.TimeSeriesAggregation(
@@ -632,6 +634,8 @@ if __name__ == "__main__":
     refurbish =["no_refurbishment","usual_refurbishment","advanced_refurbishment"]  # Beispiel #"GEG_standard"
     import multiprocessing
     import os
-    if True:
+
+    run_main("no_refurbishment")
+    if False:
         with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
             pool.map(run_main, refurbish)

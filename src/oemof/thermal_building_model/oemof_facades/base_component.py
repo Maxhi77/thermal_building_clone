@@ -40,7 +40,7 @@ class InvestmentComponents(TimeConfiguration):
                 + self.cost_per_unit * self.operational_cost_relative_to_capacity * self.lifetime)  # ✅ Correct check
 
         #return economics.annuity(capex=capex, n=self.observation_period, u=self.lifetime, wacc=self.wacc) * self.reference_unit_quantity
-        return self.cost_per_unit * self.get_depreciation_period()
+        return self.cost_per_unit * self.get_depreciation_period() * self.reference_unit_quantity
     def get_depreciation_period(self):
         return self.observation_period / self.lifetime
     def set_reference_unit_quantity(self, reference_unit_quantity: int):
