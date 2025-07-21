@@ -41,8 +41,7 @@ def main(co2_new,peak_new,refurbish,building_id, floor_area):
     electricity_carrier_dataclass = ElectricityCarrier()
     electricity_carrier_bus = electricity_carrier_dataclass.get_bus()
     connect_buses(input=electricity_grid_bus_from_grid, target=electricity_carrier_bus, output=electricity_grid_bus_into_grid)
-    electricity_demand_dataclass = ElectricityDemand(building_id = building_id,
-                                                    bus=electricity_carrier_bus)
+    electricity_demand_dataclass = ElectricityDemand(bus=electricity_carrier_bus)
     electricity_demand = electricity_demand_dataclass.create_demand()
 
     electricity  = [electricity_grid_bus_from_grid,
@@ -69,8 +68,7 @@ def main(co2_new,peak_new,refurbish,building_id, floor_area):
 
     heat_demand_dataclass = WarmWater(name="WarmWater",
                                        level = 40,
-                                       bus=heat_carrier_bus[40],
-                                        building_id=building_id)
+                                       bus=heat_carrier_bus[40])
     heat_demand = heat_demand_dataclass.create_demand()
 
     hot_water_tank_dataclass = HotWaterTank(
@@ -124,13 +122,6 @@ def main(co2_new,peak_new,refurbish,building_id, floor_area):
                                 maximum_capacity = 15000)
     battery = battery_dataclass.create_storage()
     es.add(battery)
-    pv_dataclass = PVSystem(investment=True)
-    pv_system = pv_dataclass.create_source(output_bus = electricity_carrier_bus,
-
-                             )
-    es.add(pv_system)
-
-
 
     building_dataclass = ThermalBuilding(name=building_id,
                                          floor_area = floor_area,
@@ -145,6 +136,17 @@ def main(co2_new,peak_new,refurbish,building_id, floor_area):
                                           )
     building_component = building_dataclass.create_demand()
     es.add(building_component)
+
+
+    pv_dataclass = PVSystem(investment=True)
+    pv_dataclass.update_maximum_investment_pv_capacity_based_on_area(area = building_dataclass.get_roof_area_for_pv())
+    pv_system = pv_dataclass.create_source(output_bus = electricity_carrier_bus)
+    es.add(pv_system)
+
+
+
+
+
     heat = []
     heat = [
         #heat_grid_sink,
@@ -232,28 +234,29 @@ def main(co2_new,peak_new,refurbish,building_id, floor_area):
         final_results["totex"] = meta_results["objective"]
 
         return final_results, co2
-    except:
+    except Exception as e:
+        print(e)
         return None, None
 
 
 building_ids = [
-    #"DENILD1100004vsl",
-                #"DENILD1100004uSx",
-                #"DENILD1100004u2T",
+    #"DENILD1100004vsl", y
+                #"DENILD1100004uSx", y
+                #"DENILD1100004u2T", auf remote
                 #"DENILD1100004smj",
-                "DENILD1100004sZd",
-                "DENILD1100004rW0",
-                #"representativeSFH"
+                #"DENILD1100004sZd", y
+                #"DENILD1100004rW0",
+                "representativeSFH"
 ]
 floor_areas = [
     #375,
                #212,
     #366,
     #393,
-    363,
-    249,
+    #363,
+    #249,
 
-    #326
+    326
 ]
 if False:
     building_ids = ["DENILD1100004vsl",
@@ -267,7 +270,7 @@ building_floor_area_dict = dict(zip(building_ids, floor_areas))
 
 for building_id, floor_area in building_floor_area_dict.items():
 
-    refurbishment =["no_refurbishment","usual_refurbishment","advanced_refurbishment","GEG_standard"] # ,"no_refurbishment","usual_refurbishment""advanced_refurbishment","GEG_standard"
+    refurbishment =["usual_refurbishment"] # ,"no_refurbishment","usual_refurbishment""advanced_refurbishment","GEG_standard"
     results_loop_to_save = {}
     for refurbish in refurbishment:
         final_results_ref, co2_ref = main(None, None,refurbish,building_id, floor_area)
@@ -297,8 +300,8 @@ for building_id, floor_area in building_floor_area_dict.items():
                 try:
                     final_results, co2  = main(co2_new,peak_new,refurbish,building_id, floor_area)
                     totex = final_results["totex"]
-                    peak = max(final_results_ref["Electricity"]["peak_into_grid"],
-                        final_results_ref["Electricity"]["peak_from_grid"])
+                    peak = max(final_results["Electricity"]["peak_into_grid"],
+                        final_results["Electricity"]["peak_from_grid"])
                 except:
                     final_results = None
                     co2 = None
