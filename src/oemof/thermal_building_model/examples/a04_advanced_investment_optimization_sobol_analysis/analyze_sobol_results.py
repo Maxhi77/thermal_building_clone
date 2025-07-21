@@ -76,8 +76,8 @@ with open("results_sobol_final", "rb") as f:
     print("results saved")
     problem = {
         'num_vars': 4,
-        'names': ['net_floor_area', 'tabula_year_class', 'number_of_residents',
-                  'household_type'],
+        'names': ['floor area', 'construction period', 'number of residents',
+                  'household type'],
         'bounds': [
             [80, 360],      # Wohnfläche in m²
             [1, 11],        # tabula_year_class (1-11 Klassen)
@@ -87,10 +87,10 @@ with open("results_sobol_final", "rb") as f:
     }
     # Sampling (kleine Anzahl für Test)
     param_values = saltelli.sample(problem, int(128*8,), calc_second_order=False)
-    idx_size = problem['names'].index('net_floor_area')
-    idx_year_class = problem['names'].index('tabula_year_class')
-    idx_residents = problem['names'].index('number_of_residents')
-    idx_household_type = problem['names'].index('household_type')
+    idx_size = problem['names'].index('floor area')
+    idx_year_class = problem['names'].index('construction period')
+    idx_residents = problem['names'].index('number of residents')
+    idx_household_type = problem['names'].index('household type')
 
     peak_list = []
     co2_list = []
@@ -99,9 +99,9 @@ with open("results_sobol_final", "rb") as f:
     for key in data_dict:
         entry = data_dict[key]
         if "peak" in entry and "co2" in entry and "totex" in entry:
-            peak_list.append(entry["peak"])
-            co2_list.append(entry["co2"])
-            totex_list.append(entry["totex"])
+            peak_list.append(entry["peak"]/param_values[key][0])
+            co2_list.append(entry["co2"]/param_values[key][0])
+            totex_list.append(entry["totex"]/param_values[key][0])
 
     # Convert lists to numpy arrays
     co2_array = np.array(co2_list)
@@ -145,23 +145,32 @@ with open("results_sobol_final", "rb") as f:
 
     def plot_sobol_heatmap_with_total_index(sobol_results, title, problem_names):
         # Combine the Sobol indices into a matrix (rows: outputs, columns: parameters)
-        sobol_matrix = np.array([sobol_result['S1'] for sobol_result in sobol_results])  # First-order Sobol indices
-        total_index_matrix = np.array([sobol_result['ST'] for sobol_result in sobol_results])  # Total Sobol indices
+        # Prepare the Sobol indices for both first-order and total for each output
+        sobol_alternating_matrix = []
+        total_index_matrix = []
 
-        # Create a matrix with both first-order and total indices
-        combined_matrix = np.vstack((sobol_matrix, total_index_matrix))  # Stack both matrices
+        # Loop over the Sobol results and extract the first-order and total Sobol indices for each output
+        for sobol_result in sobol_results:
+            sobol_alternating_matrix.append(sobol_result['S1'])  # First-order Sobol indices
+            sobol_alternating_matrix.append(sobol_result['ST'])  # Total Sobol indices
+
+        # Convert the list to a numpy array (combined_matrix now stacks first and total Sobol indices vertically)
+        combined_matrix = np.array(sobol_alternating_matrix)
 
         # Create a custom y-tick label that represents both first and total indices for each output
-        output_names = ['CO₂ (First)', 'CO₂ (Total)', 'TOTEX (First)', 'TOTEX (Total)', 'PEAK (First)', 'PEAK (Total)']
+        output_names = ['CO₂ (First) \n/ floor area', 'CO₂ (Total) \n/ floor area',
+                        'TOTEX (First) \n/ floor area', 'TOTEX (Total) \n/ floor area',
+                        'PEAK (First) \n/ floor area', 'PEAK (Total) \n/ floor area']
 
         # Create a new figure for the plot
         fig, ax = plt.subplots(figsize=(12, 8))
 
-        # Plotting the heatmap
+        # Plotting the heatmap with color bar limits from 0 to 1
         sns.heatmap(combined_matrix, annot=True, cmap='coolwarm', xticklabels=problem_names, yticklabels=output_names,
-                    cbar_kws={'label': 'Sobol Index'}, center=0, ax=ax)  # Set the center of the colormap at 0
+                    cbar_kws={'label': 'Sobol Index', 'ticks': [0, 0.25, 0.5, 0.75, 1]},
+                    center=0, ax=ax, vmin=0, vmax=1)  # Set the color bar to go from 0 to 1
         ax.set_title(f'{title} - Sobol Indices Heatmap')
-
+        plt.yticks(rotation=0)
         # Return the figure object so it can be saved later
         return fig
     # Funktion für Sobol-Indizes mit Fehlerbalken
@@ -205,8 +214,8 @@ with open("results_sobol_final", "rb") as f:
 
     def save_plot_as_pdf(fig, plot_name, path_to_save):
         # Speichern des Plots im angegebenen Verzeichnis als PDF
-        plot_path = os.path.join(path_to_save, plot_name + ".pdf")
-        fig.savefig(plot_path, format='pdf')  # Speichern des Plots
+        plot_path = os.path.join(path_to_save, plot_name + "_relative.pdf")
+        fig.savefig(plot_path, format='pdf', dpi=300)  # Speichern des Plots mit 300 DPI
         plt.close(fig)  # Schließt den Plot, um den nächsten zu erzeugen
 
 
