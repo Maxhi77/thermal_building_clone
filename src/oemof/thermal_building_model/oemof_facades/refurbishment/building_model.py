@@ -206,12 +206,6 @@ class ThermalBuilding(Demand):
         tabula_building_code = self.building_object.tabula_building_code.array[0]
         index = tabula_building_code.find("Gen.") - 2
         tabula_gen = int(tabula_building_code[index:index + 1])
-        simplyfication_heat_demand_building_one_temp = True
-        if simplyfication_heat_demand_building_one_temp:
-            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            print("simplyfication_heat_demand_building_one_temp == TRUE")
-            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            return 40
         #era_related_heat_distribution_temp_levels = [(1980, 70), (2000, 60), (2010, 50), (3000, 40)]
         if tabula_building_code.endswith(".001"):
             era_related_heat_distribution_temp_levels = [(5, 70), (9, 60), (10, 50), (11, 40)]  # (XY.Gen,T_inlet)
