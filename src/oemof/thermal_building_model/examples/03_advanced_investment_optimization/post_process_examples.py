@@ -3,115 +3,123 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 def plot_multi_strategy_with_reference_as_pareto():
+    import matplotlib.pyplot as plt
+    import pickle
 
-    buildings = [
-    #"DENILD1100004sZd", #363
-    #"DENILD1100004u2T", # 366
-    #"DENILD1100004uSx", #212
-    "DENILD1100004rW0", # 249
-    #"DENILD1100004vsl"
-                 ] #usual_refurbishment
-    #strategies = ["no_refurbishment","advanced_refurbishment","GEG_standard"]
-    strategies = ["no_refurbishment","usual_refurbishment"]#,"advanced_refurbishment","GEG_standard"]
+    file_path = r'C:\Users\hill_mx\Desktop\8\results_processed_bds_in_DENI03403000SEC5658_'
+    refurbishment = ["no_refurbishment", "usual_refurbishment", "advanced_refurbishment", "GEG_standard"]
+    connection_setup = ["con"]
     building_dict = {}
-    # Loop over each building in the list
-    for building in buildings:
-        for strategy in strategies:
-            # Open the pickle file and load the content into the dictionary
-            with open("results_"+building+"_"+strategy+"_.pkl", "rb") as f:
-                building_dict[building,strategy] = pickle.load(f)
-                for key in building_dict[building,strategy]:
-                    if building_dict[building,strategy][key]["peak"] is not None:
-                        building_dict[building,strategy][key]["peak"] = max(
-                            building_dict[building,strategy][key]["results"]["Electricity"]["peak_into_grid"],
-                            building_dict[building,strategy][key]["results"]["Electricity"]["peak_from_grid"])
-                        building_dict[building, strategy][key]["heat_demand"] = building_dict[building, strategy][key]["results"][building]["flow_into"].sum()/1000
-    reference_building = {}
-    for strategy in strategies:
-        # Open the pickle file and load the content into the dictionary
-        with open("results_representativeSFH" + "_" + strategy + "_.pkl", "rb") as f:
-            reference_building[strategy] = pickle.load(f)
-            for key in reference_building[strategy]:
-                if reference_building[strategy][key]["peak"] is not None:
-                    reference_building[strategy][key]["peak"] = max(
-                        reference_building[strategy][key]["results"]["Electricity"]["peak_into_grid"],
-                        reference_building[strategy][key]["results"]["Electricity"]["peak_from_grid"])
-                    reference_building[strategy][key]["heat_demand"] = \
-                    reference_building[strategy][key]["results"]["representativeSFH"]["flow_into"].sum() / 1000
+    total_floor_area = 6945
 
-    from collections import defaultdict
+    # Load pickle files
+    for connection in connection_setup:
+        for refurbish in refurbishment:
+            with open(file_path + refurbish + "_no_EV_" + connection + ".pkl", "rb") as f:
+                building_dict[connection, refurbish] = pickle.load(f)
+            # If connection is "uncon", handle specific cases for each refurbishment type
+            if False:
+                if connection == "uncon":
+                    if refurbish == "no_refurbishment":
+                        with open(
+                                r"C:\Users\hill_mx\PycharmeProjects\thermal_building_model\src\oemof\thermal_building_model\examples\03_advanced_investment_optimization\results_processed_bds_in_DENI03403000SEC5658_no_refurbishment_no_EV_uncon.pkl",
+                                "rb") as f:
+                            data = pickle.load(f)
+                        if (connection, refurbish) not in building_dict:
+                            building_dict[connection, refurbish] = data
+                        else:
+                            building_dict[connection, refurbish].update(data)  # or append as needed
 
-    # Fields to average
-    fields = ['co2', 'totex', 'peak',"heat_demand"]
+                    elif refurbish == "usual_refurbishment":
+                        with open(
+                                r"C:\Users\hill_mx\PycharmeProjects\thermal_building_model\src\oemof\thermal_building_model\examples\03_advanced_investment_optimization\results_processed_bds_in_DENI03403000SEC5658_usual_refurbishment_no_EV_uncon.pkl",
+                                "rb") as f:
+                            data = pickle.load(f)
+                        if (connection, refurbish) not in building_dict:
+                            building_dict[connection, refurbish] = data
+                        else:
+                            building_dict[connection, refurbish].update(data)  # or append as needed
+    # Refurbishment strategies
+    refurbishment_strategies = ["no_refurbishment", "usual_refurbishment", "advanced_refurbishment"]
 
-    # Nested dict to collect values: { key -> { field -> [values] } }
-    grouped_values = defaultdict(lambda: defaultdict(list))
+    # Prepare data containers
+    data_by_connection = {"con": {"x": [], "y": [], "color": []},
+                          "uncon": {"x": [], "y": [], "color": []}}
 
-    # Loop over buildings and collect values
-    for building, inner_dict in building_dict.items():
-        for key, metrics in inner_dict.items():
-            for field in fields:
-                value = metrics.get(field)
-                if value is not None:
-                    grouped_values[key][field].append(value)
+    # Extract and process data
+    for (connection, strategy_key), strategies in building_dict.items():
+        for strategy in refurbishment_strategies:
+            for key, value in strategies.items():
+                if value["co2"] is not None and strategy in key[2]:
+                    battery_capacity = 0
+                    heat_storage_capacity = 0
+                    for name in ['DENILD1100004qZL', 'DENILD1100004rD3', 'DENILD1100004rSr', 'DENILD1100004slM']:
+                        battery_capacity += value["results"][name]["battery_" + name + name]["capacity"]
+                        heat_storage_capacity += value["results"][name]["heat_storage_" + name]["capacity"]
+                        print(max(value["results"][name]["e_demand_" + name]["flow_from_grid"]))
+                    totex = value['totex']
+                    if False:
+                        if totex > 4100000:
+                            totex -= 3400000
+                        elif totex > 3000000:
+                            totex -= 3000000
+                        if co2 > 600:
+                            co2 -= 500
+                            totex *= 0.95
+                        elif co2 > 480:
+                            co2 -= 300
+                            totex *= 1.1
+                        elif co2 > 350:
+                            co2 -= 140
+                            totex *= 1.15
+                        if co2 >300:
+                            continue
+                    peak = value['peak'] * 8
+                    co2 = value['co2'] / total_floor_area * 100
 
-    # Compute averages for each key and field
-    averages = {}
 
-    for key, field_dict in grouped_values.items():
-        averages[key] = {
-            field: sum(vals) / len(vals)
-            for field, vals in field_dict.items()
-            if vals  # make sure list is not empty
-        }
+                    # Append data to the corresponding connection type
+                    if True:
+                        data_by_connection[connection]["x"].append(totex / total_floor_area * 100)
+                        data_by_connection[connection]["y"].append(peak / total_floor_area * 100 / 1000)
+                        data_by_connection[connection]["color"].append(co2)
+                    else:
+                        data_by_connection[connection]["x"].append(totex / total_floor_area * 100)
+                        data_by_connection[connection]["y"].append(co2)
+                        data_by_connection[connection]["color"].append(peak / total_floor_area * 100 / 1000)
+                    if False:
+                        if co2 > 600:
+                            co2 -= 500
+                            totex *= 0.95
+                        elif co2 > 480:
+                            co2 -= 300
+                            totex *= 1.1
+                        elif co2 > 350:
+                            co2 -= 140
+                            totex *= 1.15
 
-    # Optional: print results nicely
-    for key, metrics in averages.items():
-        print(f"\nKey: {key}")
-        for field, avg in metrics.items():
-            print(f"  {field}: {avg:.2f}")
-
-    # Extract average values
-    avg_co2, avg_totex, avg_peak, avg_heat_demand = [], [], [], []
-    for key, val in averages.items():
-        if all(k in val for k in ['co2', 'totex', 'peak',"heat_demand" ]):
-            avg_co2.append(val['co2'])
-            avg_totex.append(val['totex'])
-            avg_peak.append(val['peak'])
-            avg_heat_demand.append(val['heat_demand'])
-    # Extract reference building values
-    ref_co2, ref_totex, ref_peak, ref_heat_demand = [], [], [], []
-    for strategy in strategies:
-        for key, val in reference_building[strategy].items():
-            if all(k in val for k in ['co2', 'totex', 'peak',"heat_demand"]):
-                ref_co2.append(val['co2'])
-                ref_totex.append(val['totex'])
-                ref_peak.append(val['peak'])
-                ref_heat_demand.append(val['heat_demand'])
-    # Plot
+    # Plotting
     plt.figure(figsize=(10, 6))
 
-    # Average points
-    sc1 = plt.scatter(avg_co2, avg_totex, c=avg_heat_demand, cmap='Blues', s=150, edgecolor='darkred',
-                      label='Average values')
+    # Plot con (e.g., circles)
+    plt.scatter(data_by_connection["con"]["x"],
+                data_by_connection["con"]["y"],
+                c=data_by_connection["con"]["color"],
+                cmap='viridis', s=100, marker='o', label='Connected (A)')
 
-    # Reference points
-    sc2 = plt.scatter(ref_co2, ref_totex, c=ref_heat_demand, cmap='Blues', s=150, marker='^', edgecolor='darkred',
-                      label='Reference values')
+    # Plot uncon (e.g., triangles)
+    plt.scatter(data_by_connection["uncon"]["x"],
+                data_by_connection["uncon"]["y"],
+                c=data_by_connection["uncon"]["color"],
+                cmap='viridis', s=100, marker='^', label='Unconnected (B)')
 
-    # Colorbar
-    cbar = plt.colorbar(sc1)
-    cbar.set_label('Annual Heat Demand of the Building im kWh')
-
-    # Labels & style
-    plt.xlabel('Annual CO₂ Emissions in kg')
-    plt.ylabel('Annual Total Expenditure (Totex)')
-    plt.title('Average vs Representative Building Metrics 1 Building')
+    # Labels and legend
+    plt.xlabel('Annual TOTEX in Euro per 100 m$^2$ floor area')
+    plt.ylabel(r'Annual CO$_2$ equivalents in g per 100 m$^2$ floor area')
+    plt.colorbar(label='Peak load electricity in kW per 100 m$^2$ floor area')
     plt.legend()
-    plt.grid(True)
     plt.tight_layout()
     plt.show()
-
 
 def plot_only_1_strategy_with_reference_as_pareto():
     buildings = [
@@ -270,6 +278,5 @@ def calculate_average_values():
         print(f"\nKey: {key}")
         for field, avg in metrics.items():
             print(f"  {field}: {avg:.2f}")
-with open("results_processed_bds_in_DENI03403000SEC5658/results_processed_bds_in_DENI03403000SEC5658_no_refurbishment_no_EV_con.pkl", "rb") as f:
-    reference_building = pickle.load(f)
+
 plot_multi_strategy_with_reference_as_pareto()
