@@ -52,10 +52,10 @@ def main():
     # Generates 5RC Building-Model
     building_example = Building(
         country="DE",
-        construction_year=1980,
+        construction_year=2016,
         class_building="average",
         building_type="SFH",
-        refurbishment_status="GEG",
+        refurbishment_status="no_refurbishment",
         number_of_time_steps=number_of_time_steps,
     )
     building_example.calculate_all_parameters()
