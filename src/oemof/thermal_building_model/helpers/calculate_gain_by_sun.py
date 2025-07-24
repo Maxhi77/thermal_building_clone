@@ -272,7 +272,7 @@ class Window(object):
         if math.isnan(poa_irrad["poa_direct"]):
             return 0
 
-        return poa_irrad["poa_direct"] * self.reduction_factor
+        return poa_irrad["poa_direct"] * self.reduction_factor * self.area
     def calc_solar_gains(
         self,
         sun_altitude,
