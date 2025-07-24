@@ -586,11 +586,11 @@ class Building:
             )
 
         compass_directions = {
-            "north": {"azimuth_tilt": 270, "alititude_tilt": 90},
-            "east": {"azimuth_tilt": 90, "alititude_tilt": 90},
-            "south": {"azimuth_tilt": 180, "alititude_tilt": 90},
-            "west": {"azimuth_tilt": 0, "alititude_tilt": 90},
-            "horizontal": {"azimuth_tilt": 0, "alititude_tilt": 0},
+            "north": {"azimuth_tilt": 0, "alititude_tilt": 90}, 
+            "east": {"azimuth_tilt": 90, "alititude_tilt": 90},  
+            "south": {"azimuth_tilt": 180, "alititude_tilt": 90}, 
+            "west": {"azimuth_tilt": 270, "alititude_tilt": 90},  
+            "horizontal": {"azimuth_tilt": 0, "alititude_tilt": 0},  
         }
         list_solar_gains = []
         (
