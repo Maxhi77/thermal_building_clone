@@ -10,7 +10,19 @@ from oemof.thermal_building_model.oemof_facades.technologies.renewable_energy_so
 from oemof.thermal_building_model.oemof_facades.technologies.storages import Battery, HotWaterTank, SeasonalWaterTank
 from oemof.thermal_building_model.oemof_facades.technologies.converter import AirHeatPump, GasHeater, CHP
 from oemof.thermal_building_model.oemof_facades.technologies.heat_grid import HeatGridInvestment
-from oemof.thermal_building_model.input.economics.operation_grid_economics import natural_gas_grid_config, bio_gas_grid_config
+from oemof.thermal_building_model.input.economics.operation_grid_economics import (
+    natural_gas_grid_config,
+    bio_gas_grid_config,
+    electricity_grid_config,
+    hydrogen_grid_config,
+)
+from oemof.thermal_building_model.helpers.price_scenarios import (
+    DEFAULT_PRICE_SCENARIOS,
+    normalize_price_scenario_name as _normalize_price_scenario_name,
+    parse_price_scenarios as _parse_price_scenarios,
+    resolve_price_scenario_config as _resolve_price_scenario_config,
+    scenario_output_cluster_name as _scenario_output_cluster_name,
+)
 import numpy as np
 from oemof.thermal_building_model.oemof_facades.refurbishment.building_model import ThermalBuilding
 from oemof.thermal_building_model.helpers.calculate_pv_electricity_yield import simulate_pv_yield
@@ -40,7 +52,20 @@ import tsam.timeseriesaggregation as tsam
 
 import pandas as pd
 #  create solver
-def run_model(co2_new,peak_new,data,aggregation1,t1_agg,data_classes_comp,combined_cluster,heat_grid_temperature,cluster_occurence,heat_demand_worst_case,heat_grid_length):
+def run_model(
+    co2_new,
+    peak_new,
+    data,
+    aggregation1,
+    t1_agg,
+    data_classes_comp,
+    combined_cluster,
+    heat_grid_temperature,
+    cluster_occurence,
+    heat_demand_worst_case,
+    heat_grid_length,
+    price_scenario=None,
+):
     es = solph.EnergySystem(
         timeindex=t1_agg,
         timeincrement=[1] * len(t1_agg),
@@ -60,6 +85,7 @@ def run_model(co2_new,peak_new,data,aggregation1,t1_agg,data_classes_comp,combin
 
     dataclasses[heat_grid_id]={}
     components[heat_grid_id]={}
+    price_scenario_config = _resolve_price_scenario_config(price_scenario)
 
     total_heat_demand_year=None
     heat_transfer_station_max_kW = []
@@ -96,10 +122,17 @@ def run_model(co2_new,peak_new,data,aggregation1,t1_agg,data_classes_comp,combin
         total_heat_demand_year_sum  += total_heat_demand_year[cluster].sum() * count
 
     if peak_new is False or peak_new is None:
-        electricity_grid_dataclass = ElectricityGrid()
+        electricity_grid_config_grid = copy.deepcopy(electricity_grid_config)
+        electricity_grid_config_grid.working_rate *= float(price_scenario_config["electricity_factor"])
+        electricity_grid_config_grid.revenue *= float(price_scenario_config["electricity_feed_in_factor"])
+        electricity_grid_dataclass = ElectricityGrid(operation_grid=electricity_grid_config_grid)
     else:
+        electricity_grid_config_grid = copy.deepcopy(electricity_grid_config)
+        electricity_grid_config_grid.working_rate *= float(price_scenario_config["electricity_factor"])
+        electricity_grid_config_grid.revenue *= float(price_scenario_config["electricity_feed_in_factor"])
         electricity_grid_dataclass = ElectricityGrid(max_peak_from_grid=peak_new,
-                                                     max_peak_into_grid=peak_new)
+                                                     max_peak_into_grid=peak_new,
+                                                     operation_grid=electricity_grid_config_grid)
 
     electricity_grid_bus_from_grid = electricity_grid_dataclass.get_bus_from_grid()
     electricity_grid_bus_into_grid = electricity_grid_dataclass.get_bus_into_grid()
@@ -116,12 +149,14 @@ def run_model(co2_new,peak_new,data,aggregation1,t1_agg,data_classes_comp,combin
                     electricity_carrier_bus]
     es.add(*electricity)
     natural_gas_grid_config_grid = copy.deepcopy(natural_gas_grid_config)
+    natural_gas_grid_config_grid.working_rate *= float(price_scenario_config["natural_gas_factor"])
     natural_gas_grid_dataclass = GasGrid(operation_grid=natural_gas_grid_config_grid,
                                  name="NaturalGas")
     natural_gas_grid_bus_from_grid = natural_gas_grid_dataclass.get_bus_from_grid()
     natural_gas_grid_source = natural_gas_grid_dataclass.create_source()
 
     bio_gas_grid_config_grid = copy.deepcopy(bio_gas_grid_config)
+    bio_gas_grid_config_grid.working_rate *= float(price_scenario_config["bio_gas_factor"])
     bio_gas_grid_dataclass = GasGrid(operation_grid=bio_gas_grid_config_grid,
                                  name="BioGas")
     bio_gas_grid_bus_from_grid = bio_gas_grid_dataclass.get_bus_from_grid()
@@ -135,7 +170,9 @@ def run_model(co2_new,peak_new,data,aggregation1,t1_agg,data_classes_comp,combin
     gas = [natural_gas_grid_bus_from_grid,bio_gas_grid_bus_from_grid,bio_gas_grid_source,natural_gas_grid_source,gas_bus]
     es.add(*gas)
 
-    hydrogen_grid_dataclass = HydrogenGrid()
+    hydrogen_grid_config_grid = copy.deepcopy(hydrogen_grid_config)
+    hydrogen_grid_config_grid.working_rate *= float(price_scenario_config["hydrogen_factor"])
+    hydrogen_grid_dataclass = HydrogenGrid(operation_grid=hydrogen_grid_config_grid)
     hydrogen_grid_bus_from_grid = hydrogen_grid_dataclass.get_bus_from_grid()
     hydrogen_grid_source = hydrogen_grid_dataclass.create_source()
 
@@ -696,6 +733,8 @@ def run_model(co2_new,peak_new,data,aggregation1,t1_agg,data_classes_comp,combin
         final_results["co2_investment"] = co2_investment
         final_results["totex"] = meta_results["objective"]
         final_results["totex_oemof_model"] = meta_results["objective"]
+        final_results["price_scenario_name"] = _normalize_price_scenario_name(price_scenario)
+        final_results["price_scenario"] = price_scenario_config
         if SOLVER == "gurobi":
             return final_results, co2_oemof_model, meta_results["solver"]["Wall time"]
         else:
@@ -1067,13 +1106,24 @@ def _atomic_pickle_dump(path, payload):
         pickle.dump(payload, fh)
 
 
-def _build_result_entries(final_results, co2, peak_reduction_factor, refurbish, time):
+def _build_result_entries(
+    final_results,
+    co2,
+    peak_reduction_factor,
+    refurbish,
+    time,
+    price_scenario_name="ref",
+    price_scenario=None,
+):
+    price_scenario_name = _normalize_price_scenario_name(price_scenario_name)
     if final_results is None:
         full_entry = {
             "results": None,
             "co2": None,
             "peak_reduction_factor": None,
             "refurbish": None,
+            "price_scenario_name": price_scenario_name,
+            "price_scenario": price_scenario,
             "totex": None,
             "peak": None,
             "electricity_grid": None,
@@ -1085,6 +1135,8 @@ def _build_result_entries(final_results, co2, peak_reduction_factor, refurbish, 
             "co2": None,
             "peak_reduction_factor": None,
             "refurbish": None,
+            "price_scenario_name": price_scenario_name,
+            "price_scenario": price_scenario,
             "totex": None,
             "peak": None,
             "electricity_grid": None,
@@ -1103,6 +1155,8 @@ def _build_result_entries(final_results, co2, peak_reduction_factor, refurbish, 
         "co2": co2,
         "peak_reduction_factor": peak_reduction_factor,
         "refurbish": refurbish,
+        "price_scenario_name": price_scenario_name,
+        "price_scenario": price_scenario,
         "totex": totex,
         "peak": peak,
         "electricity_grid": final_results["Electricity"],
@@ -1114,6 +1168,8 @@ def _build_result_entries(final_results, co2, peak_reduction_factor, refurbish, 
         "co2": co2,
         "peak_reduction_factor": peak_reduction_factor,
         "refurbish": refurbish,
+        "price_scenario_name": price_scenario_name,
+        "price_scenario": price_scenario,
         "totex": totex,
         "peak": peak,
         "electricity_grid": final_results["Electricity"],
@@ -1192,9 +1248,13 @@ def run_main(
         mfh_k_value,
         scenario_mode="all",
         co2_reduction_factors_to_run=None,
+        price_scenario_name="ref",
 ):
     base_path = _get_input_root()
     result_storage_root = _get_result_storage_root()
+    price_scenario_name = _normalize_price_scenario_name(price_scenario_name)
+    price_scenario_config = _resolve_price_scenario_config(price_scenario_name)
+    output_cluster_name = _scenario_output_cluster_name(ueu, price_scenario_name)
     directory_path =os.path.join(base_path, ueu)
     number_of_time_steps = 8760
     sfh_cluster = _load_cluster_for_type(base_path, ueu, "SFH", sfh_k_value)
@@ -1207,7 +1267,7 @@ def run_main(
     print("BUILDING CLUSTER:")
     print(combined_frames)
     combined_cluster = pd.concat(combined_frames, ignore_index=True)
-    output_dir = _build_centralized_output_dir(result_storage_root, ueu, sfh_k_value, mfh_k_value)
+    output_dir = _build_centralized_output_dir(result_storage_root, output_cluster_name, sfh_k_value, mfh_k_value)
     ev = "no_EV"
     if True:
 
@@ -1388,7 +1448,20 @@ def run_main(
                 data['e_demand_total'] = data[all_e_demand_columns].sum(axis=1)
                 data['building_total'] = data[all_building_demand_columns].sum(axis=1)
 
-            final_results_ref, co2_ref, time = run_model(None, None,data,aggregation1,t1_agg,data_classes_comp,combined_cluster,heat_grid_temperature,cluster_occurence,heat_demand_worst_case,heat_grid_length)
+            final_results_ref, co2_ref, time = run_model(
+                None,
+                None,
+                data,
+                aggregation1,
+                t1_agg,
+                data_classes_comp,
+                combined_cluster,
+                heat_grid_temperature,
+                cluster_occurence,
+                heat_demand_worst_case,
+                heat_grid_length,
+                price_scenario=price_scenario_name,
+            )
             co2_reduction_factor_ref = 1
             peak_reduction_factor_ref = 1
             results_loop_to_save = {}
@@ -1397,6 +1470,8 @@ def run_main(
                 "results": final_results_ref,
                 "co2": co2_ref,
                 "peak_reduction_factor" : peak_reduction_factor_ref,
+                "price_scenario_name": price_scenario_name,
+                "price_scenario": price_scenario_config,
                 "totex": final_results_ref["totex"],
                 "peak": max(final_results_ref["Electricity"]["peak_from_grid"],
                                       final_results_ref["Electricity"]["peak_into_grid"]),
@@ -1467,7 +1542,20 @@ def run_main(
 
                                 peak_new = peak_reference * peak_reduction_factor
 
-                            final_results, co2,time  = run_model(co2_new,peak_new,data,aggregation1,t1_agg,data_classes_comp,combined_cluster,heat_grid_temperature,cluster_occurence,heat_demand_worst_case,heat_grid_length)
+                            final_results, co2,time  = run_model(
+                                co2_new,
+                                peak_new,
+                                data,
+                                aggregation1,
+                                t1_agg,
+                                data_classes_comp,
+                                combined_cluster,
+                                heat_grid_temperature,
+                                cluster_occurence,
+                                heat_demand_worst_case,
+                                heat_grid_length,
+                                price_scenario=price_scenario_name,
+                            )
                             key = (co2_reduction_factor, peak_reduction_factor, ref)
                             full_entry, simple_entry = _build_result_entries(
                                 final_results=final_results,
@@ -1475,6 +1563,8 @@ def run_main(
                                 peak_reduction_factor=peak_reduction_factor,
                                 refurbish=name_of_scenario,
                                 time=time,
+                                price_scenario_name=price_scenario_name,
+                                price_scenario=price_scenario_config,
                             )
                             results_for_co2_step_full[key] = full_entry
                             results_for_co2_step_simple[key] = simple_entry
@@ -1518,13 +1608,28 @@ def run_main(
                                     co2_new = co2_reference * co2_reduction_factor
                                 else:
                                     co2_new = co2_reference * (1 + 1 - co2_reduction_factor)
-                            final_results, co2,time  = run_model(co2_new,peak_new,data,aggregation1,t1_agg,data_classes_comp,combined_cluster,heat_grid_temperature,cluster_occurence,heat_demand_worst_case,heat_grid_length)
+                            final_results, co2,time  = run_model(
+                                co2_new,
+                                peak_new,
+                                data,
+                                aggregation1,
+                                t1_agg,
+                                data_classes_comp,
+                                combined_cluster,
+                                heat_grid_temperature,
+                                cluster_occurence,
+                                heat_demand_worst_case,
+                                heat_grid_length,
+                                price_scenario=price_scenario_name,
+                            )
                             if final_results is None:
                                 results_loop_to_save[(co2_reduction_factor, peak_reduction_factor,ref)] = {
                                     "results": None,
                                     "co2": None,
                                     "peak_reduction_factor": None,
                                     "refurbish": None,
+                                    "price_scenario_name": price_scenario_name,
+                                    "price_scenario": price_scenario_config,
                                     "totex": None,
                                     "peak": None,
                                     "time":None
@@ -1546,6 +1651,8 @@ def run_main(
                                     "results": final_results,
                                     "co2": co2,
                                     "peak_reduction_factor": peak_reduction_factor,
+                                    "price_scenario_name": price_scenario_name,
+                                    "price_scenario": price_scenario_config,
                                     "totex": totex,
                                     "peak": peak,
                                     "time": time
@@ -1682,6 +1789,7 @@ def _build_all_jobs(
     mfh_requested,
     scenario_mode,
     co2_reduction_factors,
+    price_scenarios,
 ):
     jobs = []
     for heat_grid_temperature in heat_grid_supply_temperatures:
@@ -1708,41 +1816,47 @@ def _build_all_jobs(
 
             for sfh_k_value in sfh_k_values:
                 for mfh_k_value in mfh_k_values:
-                    missing_co2_factors = _missing_simple_co2_factors(
-                        base_path=result_storage_root,
-                        cluster_name=ueu,
-                        sfh_k_value=sfh_k_value,
-                        mfh_k_value=mfh_k_value,
-                        heat_grid_temperature=heat_grid_temperature,
-                        scenario_mode=scenario_mode,
-                        co2_reduction_factors=co2_reduction_factors,
-                    )
-                    if not missing_co2_factors:
+                    for price_scenario_name in price_scenarios:
+                        price_scenario_name = _normalize_price_scenario_name(price_scenario_name)
+                        output_cluster_name = _scenario_output_cluster_name(ueu, price_scenario_name)
+                        missing_co2_factors = _missing_simple_co2_factors(
+                            base_path=result_storage_root,
+                            cluster_name=output_cluster_name,
+                            sfh_k_value=sfh_k_value,
+                            mfh_k_value=mfh_k_value,
+                            heat_grid_temperature=heat_grid_temperature,
+                            scenario_mode=scenario_mode,
+                            co2_reduction_factors=co2_reduction_factors,
+                        )
+                        if not missing_co2_factors:
+                            print(
+                                "skip complete simple: "
+                                f"{output_cluster_name} | T={heat_grid_temperature} | "
+                                f"sfh={_format_k_for_folder(sfh_k_value)} | "
+                                f"mfh={_format_k_for_folder(mfh_k_value)} | "
+                                f"price_scenario={price_scenario_name}"
+                            )
+                            continue
                         print(
-                            "skip complete simple: "
-                            f"{ueu} | T={heat_grid_temperature} | "
+                            "missing simple co2 factors: "
+                            f"{output_cluster_name} | T={heat_grid_temperature} | "
                             f"sfh={_format_k_for_folder(sfh_k_value)} | "
-                            f"mfh={_format_k_for_folder(mfh_k_value)}"
+                            f"mfh={_format_k_for_folder(mfh_k_value)} | "
+                            f"price_scenario={price_scenario_name} | "
+                            f"co2={','.join(str(x) for x in missing_co2_factors)}"
                         )
-                        continue
-                    print(
-                        "missing simple co2 factors: "
-                        f"{ueu} | T={heat_grid_temperature} | "
-                        f"sfh={_format_k_for_folder(sfh_k_value)} | "
-                        f"mfh={_format_k_for_folder(mfh_k_value)} | "
-                        f"co2={','.join(str(x) for x in missing_co2_factors)}"
-                    )
-                    jobs.append(
-                        (
-                            heat_grid_temperature,
-                            ueu,
-                            heat_grid_length,
-                            sfh_k_value,
-                            mfh_k_value,
-                            scenario_mode,
-                            missing_co2_factors,
+                        jobs.append(
+                            (
+                                heat_grid_temperature,
+                                ueu,
+                                heat_grid_length,
+                                sfh_k_value,
+                                mfh_k_value,
+                                scenario_mode,
+                                missing_co2_factors,
+                                price_scenario_name,
+                            )
                         )
-                    )
     return jobs
 
 
@@ -1760,6 +1874,7 @@ def wrapper(args):
         mfh_k_value,
         scenario_mode,
         missing_co2_factors,
+        price_scenario_name,
     ) = args
     SOLVER = solver
     SOLVER_THREADS = solver_threads
@@ -1768,6 +1883,7 @@ def wrapper(args):
             f"host={host_name} job={job_idx} start: temp={heat_grid_temperature} | ueu={ueu} | length={heat_grid_length} "
             f"| sfh={_format_k_for_folder(sfh_k_value)} | mfh={_format_k_for_folder(mfh_k_value)} "
             f"| scenario_mode={scenario_mode} | solver={SOLVER} | solver_threads={SOLVER_THREADS} "
+            f"| price_scenario={price_scenario_name} "
             f"| co2={','.join(str(x) for x in missing_co2_factors)}"
         )
         run_main(
@@ -1778,15 +1894,18 @@ def wrapper(args):
             mfh_k_value,
             scenario_mode=scenario_mode,
             co2_reduction_factors_to_run=missing_co2_factors,
+            price_scenario_name=price_scenario_name,
         )
     except Exception as e:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_ueu = ueu.replace(os.sep, "_")
         safe_host = str(host_name).replace(os.sep, "_")
+        safe_price = str(price_scenario_name).replace(os.sep, "_")
         filename = (
             f"error_{safe_host}_{safe_ueu}_job{job_idx}_T{heat_grid_temperature}"
             f"_sfh_{_format_k_for_folder(sfh_k_value)}"
-            f"_mfh_{_format_k_for_folder(mfh_k_value)}_{timestamp}.txt"
+            f"_mfh_{_format_k_for_folder(mfh_k_value)}"
+            f"_price_{safe_price}_{timestamp}.txt"
         )
         path = os.path.join(ERROR_DIR, filename)
         with open(path, "w", encoding="utf-8") as f:
@@ -1798,6 +1917,7 @@ def wrapper(args):
             f.write(f"sfh_k_value: {sfh_k_value}\n")
             f.write(f"mfh_k_value: {mfh_k_value}\n")
             f.write(f"scenario_mode: {scenario_mode}\n")
+            f.write(f"price_scenario_name: {price_scenario_name}\n")
             f.write(f"solver: {SOLVER}\n")
             f.write(f"solver_threads: {SOLVER_THREADS}\n")
             f.write(f"missing_co2_factors: {missing_co2_factors}\n")
@@ -1858,6 +1978,12 @@ if __name__ == "__main__":
         help="Comma-separated CO2 reduction factors expected as simple result files.",
     )
     parser.add_argument(
+        "--price-scenarios",
+        type=str,
+        default=",".join(DEFAULT_PRICE_SCENARIOS),
+        help="Comma-separated price scenarios, or 'all'. Uses helpers.price_scenarios.",
+    )
+    parser.add_argument(
         "--input-root",
         type=str,
         default="default",
@@ -1891,12 +2017,15 @@ if __name__ == "__main__":
     mfh_requested = _parse_k_values(args.mfh_k)
     ueu_cases = _parse_ueu_cases(args.ueu_cases)
     co2_reduction_factors = _parse_float_values(args.co2_factors, "CO2 reduction factor")
+    price_scenarios = _parse_price_scenarios(args.price_scenarios)
     if not heat_grid_supply_temperatures:
         raise ValueError("No temperatures provided.")
     if not sfh_requested and not mfh_requested:
         raise ValueError("Both --sfh-k and --mfh-k are empty.")
     if not co2_reduction_factors:
         raise ValueError("No CO2 reduction factors provided.")
+    if not price_scenarios:
+        raise ValueError("No price scenarios provided.")
 
     script_base = _script_base_path()
     INPUT_ROOT = _normalize_input_root(args.input_root, script_base)
@@ -1915,6 +2044,7 @@ if __name__ == "__main__":
         mfh_requested=mfh_requested,
         scenario_mode=args.scenario_mode,
         co2_reduction_factors=co2_reduction_factors,
+        price_scenarios=price_scenarios,
     )
     if not all_jobs_raw:
         print("No jobs to run.")
@@ -1946,6 +2076,7 @@ if __name__ == "__main__":
         f"host={args.host_name} total_jobs={total_jobs} "
         f"selected_range=[{args.job_start},{end_idx}) selected_jobs={len(selected_jobs)} "
         f"workers={workers} solver={SOLVER} solver_threads={SOLVER_THREADS} "
+        f"price_scenarios={','.join(price_scenarios)} "
         f"input_root={base_path} result_storage_root={RESULT_STORAGE_ROOT if RESULT_STORAGE_ROOT else base_path}"
     )
 
