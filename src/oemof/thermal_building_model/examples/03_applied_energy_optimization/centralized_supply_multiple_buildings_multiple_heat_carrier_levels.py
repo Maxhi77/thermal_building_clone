@@ -1001,7 +1001,15 @@ def _expected_scenario_tokens_for_mode(scenario_mode):
     return None
 
 
-def _missing_simple_co2_factors(
+def _simple_co2_file_path(output_dir, heat_grid_temperature, scenario_token, co2_reduction_factor):
+    co2_suffix = _co2_factor_to_suffix(co2_reduction_factor)
+    return os.path.join(
+        output_dir,
+        f"res_cen_t{int(heat_grid_temperature)}_{scenario_token}_simple_co2_{co2_suffix}.pkl",
+    )
+
+
+def _missing_simple_co2_by_scenario(
     base_path,
     cluster_name,
     sfh_k_value,
@@ -1015,23 +1023,33 @@ def _missing_simple_co2_factors(
     if scenario_tokens is None:
         # For "all" mode the generated scenario names are only known after preprocessing,
         # so do not skip jobs based on an incomplete filesystem heuristic.
-        return list(co2_reduction_factors)
+        return None
 
-    missing = []
-    for co2_reduction_factor in co2_reduction_factors:
-        co2_suffix = _co2_factor_to_suffix(co2_reduction_factor)
-        all_expected_files_exist = True
-        for scenario_token in scenario_tokens:
-            simple_file_path = os.path.join(
+    missing_by_scenario = {}
+    for scenario_token in scenario_tokens:
+        missing = []
+        for co2_reduction_factor in co2_reduction_factors:
+            simple_file_path = _simple_co2_file_path(
                 output_dir,
-                f"res_cen_t{int(heat_grid_temperature)}_{scenario_token}_simple_co2_{co2_suffix}.pkl",
+                heat_grid_temperature,
+                scenario_token,
+                co2_reduction_factor,
             )
             if not os.path.exists(simple_file_path):
-                all_expected_files_exist = False
-                break
-        if not all_expected_files_exist:
-            missing.append(co2_reduction_factor)
-    return missing
+                missing.append(co2_reduction_factor)
+        if missing:
+            missing_by_scenario[scenario_token] = missing
+    return missing_by_scenario
+
+
+def _format_missing_simple_co2_by_scenario(missing_by_scenario):
+    if missing_by_scenario is None:
+        return "all"
+    parts = []
+    for scenario_token in sorted(missing_by_scenario):
+        co2_values = ",".join(str(x) for x in missing_by_scenario[scenario_token])
+        parts.append(f"{scenario_token}={co2_values}")
+    return " | ".join(parts)
 
 
 def _script_base_path():
@@ -1264,6 +1282,7 @@ def run_main(
         mfh_k_value,
         scenario_mode="all",
         co2_reduction_factors_to_run=None,
+        missing_simple_co2_by_scenario=None,
         price_scenario_name="ref",
 ):
     base_path = _get_input_root()
@@ -1377,6 +1396,14 @@ def run_main(
         print("Gespeichert:", path)
         print(f"Szenarien aktiv ({scenario_mode}): {len(scenarios)}")
         for scenario in scenarios:
+            name_of_scenario = scenario["name"]
+            scenario_token = _scenario_name_to_token(name_of_scenario)
+            scenario_co2_reduction_factors_to_run = co2_reduction_factors_to_run
+            if missing_simple_co2_by_scenario is not None:
+                scenario_co2_reduction_factors_to_run = missing_simple_co2_by_scenario.get(scenario_token, [])
+                if not scenario_co2_reduction_factors_to_run:
+                    print(f"skip complete scenario simple: {scenario_token}")
+                    continue
             location = calculate_gain_by_sun.Location(
                 epwfile_path=os.path.join(
                     main_path,
@@ -1390,7 +1417,6 @@ def run_main(
             data["air_temperature"] = location.weather_data["drybulb_C"].to_list()
             date_time_index = solph.create_time_index(2025, number=number_of_time_steps - 1)
             data.index = date_time_index
-            name_of_scenario = scenario["name"]
             heat_demand_worst_case = 0
             for index, building_row in sfh_cluster.iterrows():
                 refurbish = scenario["choice"][building_row["building_id"]]
@@ -1516,10 +1542,10 @@ def run_main(
                                              [1 - i * step for i in range(int((1.0 - (-0.1)) / step) + 1)]]
 
             co2_reduction_factors = list(DEFAULT_CO2_REDUCTION_FACTORS)
-            if co2_reduction_factors_to_run is not None:
+            if scenario_co2_reduction_factors_to_run is not None:
                 requested_co2_factors = {
                     round(float(co2_reduction_factor), 6)
-                    for co2_reduction_factor in co2_reduction_factors_to_run
+                    for co2_reduction_factor in scenario_co2_reduction_factors_to_run
                 }
                 co2_reduction_factors = [
                     co2_reduction_factor
@@ -1535,7 +1561,6 @@ def run_main(
                 if ref=="co2":
                     peak_reference = peak_reference_save
                     co2_reference = co2_reference_save
-                    scenario_token = _scenario_name_to_token(name_of_scenario)
                     result_prefix = os.path.join(
                         output_dir,
                         f"res_cen_t{int(heat_grid_temperature)}_{scenario_token}",
@@ -1837,7 +1862,7 @@ def _build_all_jobs(
                     for price_scenario_name in price_scenarios:
                         price_scenario_name = _normalize_price_scenario_name(price_scenario_name)
                         output_cluster_name = _scenario_output_cluster_name(ueu, price_scenario_name)
-                        missing_co2_factors = _missing_simple_co2_factors(
+                        missing_simple_co2_by_scenario = _missing_simple_co2_by_scenario(
                             base_path=result_storage_root,
                             cluster_name=output_cluster_name,
                             sfh_k_value=sfh_k_value,
@@ -1846,7 +1871,7 @@ def _build_all_jobs(
                             scenario_mode=scenario_mode,
                             co2_reduction_factors=co2_reduction_factors,
                         )
-                        if not missing_co2_factors:
+                        if missing_simple_co2_by_scenario == {}:
                             print(
                                 "skip complete simple: "
                                 f"{output_cluster_name} | T={heat_grid_temperature} | "
@@ -1861,7 +1886,7 @@ def _build_all_jobs(
                             f"sfh={_format_k_for_folder(sfh_k_value)} | "
                             f"mfh={_format_k_for_folder(mfh_k_value)} | "
                             f"price_scenario={price_scenario_name} | "
-                            f"co2={','.join(str(x) for x in missing_co2_factors)}"
+                            f"{_format_missing_simple_co2_by_scenario(missing_simple_co2_by_scenario)}"
                         )
                         jobs.append(
                             (
@@ -1871,7 +1896,7 @@ def _build_all_jobs(
                                 sfh_k_value,
                                 mfh_k_value,
                                 scenario_mode,
-                                missing_co2_factors,
+                                missing_simple_co2_by_scenario,
                                 price_scenario_name,
                             )
                         )
@@ -1891,7 +1916,7 @@ def wrapper(args):
         sfh_k_value,
         mfh_k_value,
         scenario_mode,
-        missing_co2_factors,
+        missing_simple_co2_by_scenario,
         price_scenario_name,
     ) = args
     SOLVER = solver
@@ -1902,7 +1927,7 @@ def wrapper(args):
             f"| sfh={_format_k_for_folder(sfh_k_value)} | mfh={_format_k_for_folder(mfh_k_value)} "
             f"| scenario_mode={scenario_mode} | solver={SOLVER} | solver_threads={SOLVER_THREADS} "
             f"| price_scenario={price_scenario_name} "
-            f"| co2={','.join(str(x) for x in missing_co2_factors)}"
+            f"| missing={_format_missing_simple_co2_by_scenario(missing_simple_co2_by_scenario)}"
         )
         run_main(
             heat_grid_temperature,
@@ -1911,7 +1936,8 @@ def wrapper(args):
             sfh_k_value,
             mfh_k_value,
             scenario_mode=scenario_mode,
-            co2_reduction_factors_to_run=missing_co2_factors,
+            co2_reduction_factors_to_run=None,
+            missing_simple_co2_by_scenario=missing_simple_co2_by_scenario,
             price_scenario_name=price_scenario_name,
         )
     except Exception as e:
@@ -1938,7 +1964,7 @@ def wrapper(args):
             f.write(f"price_scenario_name: {price_scenario_name}\n")
             f.write(f"solver: {SOLVER}\n")
             f.write(f"solver_threads: {SOLVER_THREADS}\n")
-            f.write(f"missing_co2_factors: {missing_co2_factors}\n")
+            f.write(f"missing_simple_co2_by_scenario: {missing_simple_co2_by_scenario}\n")
             f.write(f"exception: {repr(e)}\n\n")
             f.write("traceback:\n")
             f.write(traceback.format_exc())
