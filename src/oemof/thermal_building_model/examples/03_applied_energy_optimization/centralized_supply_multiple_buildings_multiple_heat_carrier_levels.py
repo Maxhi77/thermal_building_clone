@@ -996,6 +996,8 @@ def _expected_scenario_tokens_for_mode(scenario_mode):
         return ["cmin"]
     if scenario_mode == "capex_max_only":
         return ["cmax"]
+    if scenario_mode in {"capex_min_max_only", "cmin_cmax_only"}:
+        return ["cmin", "cmax"]
     return None
 
 
@@ -1237,6 +1239,20 @@ def _select_scenarios_for_mode(scenarios, scenario_mode):
             "This usually means cmax is identical to another scenario for this cluster/temperature/k combination."
         )
         return []
+    if scenario_mode in {"capex_min_max_only", "cmin_cmax_only"}:
+        selected = [
+            scenario
+            for scenario in scenarios
+            if scenario.get("name") in {"capex_min_per_building", "capex_max_per_building"}
+        ]
+        found_names = {scenario.get("name") for scenario in selected}
+        missing_names = {"capex_min_per_building", "capex_max_per_building"} - found_names
+        if missing_names:
+            raise ValueError(
+                "Scenario mode 'capex_min_max_only' requested, but the following "
+                f"scenario(s) were not found: {', '.join(sorted(missing_names))}."
+            )
+        return selected
     raise ValueError(f"Unknown scenario_mode: {scenario_mode}")
 
 
@@ -1327,21 +1343,23 @@ def run_main(
             n_random=4,
             seed=1,
         )
-        seen = set()
-        unique_scenarios = []
-        for scenario in scenarios:
-            # Convert choice dict to a hashable, order-independent representation
-            choice_signature = frozenset(scenario["choice"].items())
-            if choice_signature not in seen:
-                seen.add(choice_signature)
-                unique_scenarios.append(scenario)
-        scenarios = unique_scenarios
+        if scenario_mode in (None, "all"):
+            seen = set()
+            unique_scenarios = []
+            for scenario in scenarios:
+                # Convert choice dict to a hashable, order-independent representation
+                choice_signature = frozenset(scenario["choice"].items())
+                if choice_signature not in seen:
+                    seen.add(choice_signature)
+                    unique_scenarios.append(scenario)
+            scenarios = unique_scenarios
         print(len(scenarios), scenarios[0]["name"], list(scenarios[0]["choice"].items())[:3])
 
         print(f"Szenarien vor Dedup: {len(scenarios)}")
 
-        scenarios = remove_duplicate_scenarios(scenarios)
         scenarios = _select_scenarios_for_mode(scenarios, scenario_mode)
+        if scenario_mode in (None, "all"):
+            scenarios = remove_duplicate_scenarios(scenarios)
         if not scenarios:
             print(
                 "No scenarios selected after scenario-mode filtering. "
@@ -1680,7 +1698,7 @@ DEFAULT_UEU_CASES = [
 ]
 DEFAULT_K_VALUES_TO_OPTIMIZE_SFH = [1]
 DEFAULT_K_VALUES_TO_OPTIMIZE_MFH = [1]
-DEFAULT_SCENARIO_MODE = "capex_min_only"  # "all" | "capex_min_only" | "capex_max_only"
+DEFAULT_SCENARIO_MODE = "capex_min_max_only"  # all | capex_min_only | capex_max_only | capex_min_max_only
 DEFAULT_CO2_REDUCTION_FACTORS = [
     1,
     0.95,
@@ -1945,7 +1963,7 @@ if __name__ == "__main__":
         "--scenario-mode",
         type=str,
         default=DEFAULT_SCENARIO_MODE,
-        choices=["all", "capex_min_only", "capex_max_only"],
+        choices=["all", "capex_min_only", "capex_max_only", "capex_min_max_only", "cmin_cmax_only"],
     )
     parser.add_argument(
         "--temps",

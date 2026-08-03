@@ -14,7 +14,7 @@ LOG_DIR="${LOG_DIR:-$EXAMPLE_DIR}"
 INPUT_ROOT="${INPUT_ROOT:-$EXAMPLE_DIR}"
 RESULT_STORAGE_ROOT="${RESULT_STORAGE_ROOT:-$EXAMPLE_DIR}"
 
-SCENARIO_MODE="${SCENARIO_MODE:-all}"   # all | capex_min_only | capex_max_only
+SCENARIO_MODE="${SCENARIO_MODE:-capex_min_max_only}"   # all | capex_min_only | capex_max_only | capex_min_max_only
 SOLVER="${SOLVER:-gurobi}"
 SOLVER_THREADS="${SOLVER_THREADS:-3}"
 TEMPS="${TEMPS:-50,80}"
