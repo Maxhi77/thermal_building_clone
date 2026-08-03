@@ -13,7 +13,7 @@ INPUT_ROOT="${INPUT_ROOT:-$REMOTE_EXAMPLE_DIR}"
 # Keep result files and completion checks on the shared jump storage.
 RESULT_STORAGE_ROOT="${RESULT_STORAGE_ROOT:-/jump/mh}"
 
-SCENARIO_MODE="${SCENARIO_MODE:-capex_max_only}"   # all | capex_min_only | capex_max_only
+SCENARIO_MODE="${SCENARIO_MODE:-capex_min_max_only}"   # all | capex_min_only | capex_max_only | capex_min_max_only
 SOLVER="${SOLVER:-scip}"
 SOLVER_THREADS="${SOLVER_THREADS:-auto}"
 TEMPS="${TEMPS:-50,80}"

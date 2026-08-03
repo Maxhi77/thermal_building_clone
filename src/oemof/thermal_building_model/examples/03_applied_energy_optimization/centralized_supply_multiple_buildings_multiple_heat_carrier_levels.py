@@ -991,12 +991,14 @@ def _build_centralized_output_dir(base_path, cluster_name, sfh_k_value, mfh_k_va
     return output_dir
 
 
-def _expected_scenario_tokens_for_mode(scenario_mode):
+def _expected_scenario_tokens_for_mode(scenario_mode, heat_grid_temperature=None):
     if scenario_mode == "capex_min_only":
         return ["cmin"]
     if scenario_mode == "capex_max_only":
         return ["cmax"]
     if scenario_mode in {"capex_min_max_only", "cmin_cmax_only"}:
+        if heat_grid_temperature is not None and int(heat_grid_temperature) == 50:
+            return ["cmin"]
         return ["cmin", "cmax"]
     return None
 
@@ -1019,7 +1021,7 @@ def _missing_simple_co2_by_scenario(
     co2_reduction_factors,
 ):
     output_dir = _centralized_output_dir_path(base_path, cluster_name, sfh_k_value, mfh_k_value)
-    scenario_tokens = _expected_scenario_tokens_for_mode(scenario_mode)
+    scenario_tokens = _expected_scenario_tokens_for_mode(scenario_mode, heat_grid_temperature)
     if scenario_tokens is None:
         # For "all" mode the generated scenario names are only known after preprocessing,
         # so do not skip jobs based on an incomplete filesystem heuristic.
@@ -1050,6 +1052,21 @@ def _format_missing_simple_co2_by_scenario(missing_by_scenario):
         co2_values = ",".join(str(x) for x in missing_by_scenario[scenario_token])
         parts.append(f"{scenario_token}={co2_values}")
     return " | ".join(parts)
+
+
+def _co2_reduction_factors_for_temperature(co2_reduction_factors, heat_grid_temperature):
+    if int(heat_grid_temperature) != 80:
+        return list(co2_reduction_factors)
+
+    t80_allowed_factors = {
+        round(float(co2_reduction_factor), 6)
+        for co2_reduction_factor in DEFAULT_CO2_REDUCTION_FACTORS_T80
+    }
+    return [
+        co2_reduction_factor
+        for co2_reduction_factor in co2_reduction_factors
+        if round(float(co2_reduction_factor), 6) in t80_allowed_factors
+    ]
 
 
 def _script_base_path():
@@ -1239,7 +1256,7 @@ def _resolve_requested_k_values(base_path, cluster_name, requested_k_values, bui
     return unique
 
 
-def _select_scenarios_for_mode(scenarios, scenario_mode):
+def _select_scenarios_for_mode(scenarios, scenario_mode, heat_grid_temperature=None):
     if scenario_mode in (None, "all"):
         return scenarios
     if scenario_mode == "capex_min_only":
@@ -1258,13 +1275,19 @@ def _select_scenarios_for_mode(scenarios, scenario_mode):
         )
         return []
     if scenario_mode in {"capex_min_max_only", "cmin_cmax_only"}:
+        expected_tokens = _expected_scenario_tokens_for_mode(scenario_mode, heat_grid_temperature)
+        token_to_name = {
+            "cmin": "capex_min_per_building",
+            "cmax": "capex_max_per_building",
+        }
+        expected_names = {token_to_name[token] for token in expected_tokens}
         selected = [
             scenario
             for scenario in scenarios
-            if scenario.get("name") in {"capex_min_per_building", "capex_max_per_building"}
+            if scenario.get("name") in expected_names
         ]
         found_names = {scenario.get("name") for scenario in selected}
-        missing_names = {"capex_min_per_building", "capex_max_per_building"} - found_names
+        missing_names = expected_names - found_names
         if missing_names:
             raise ValueError(
                 "Scenario mode 'capex_min_max_only' requested, but the following "
@@ -1376,7 +1399,7 @@ def run_main(
 
         print(f"Szenarien vor Dedup: {len(scenarios)}")
 
-        scenarios = _select_scenarios_for_mode(scenarios, scenario_mode)
+        scenarios = _select_scenarios_for_mode(scenarios, scenario_mode, heat_grid_temperature)
         if scenario_mode in (None, "all"):
             scenarios = remove_duplicate_scenarios(scenarios)
         if not scenarios:
@@ -1541,7 +1564,10 @@ def run_main(
                     co2_reduction_factors = [round(x, 3) for x in
                                              [1 - i * step for i in range(int((1.0 - (-0.1)) / step) + 1)]]
 
-            co2_reduction_factors = list(DEFAULT_CO2_REDUCTION_FACTORS)
+            co2_reduction_factors = _co2_reduction_factors_for_temperature(
+                DEFAULT_CO2_REDUCTION_FACTORS,
+                heat_grid_temperature,
+            )
             if scenario_co2_reduction_factors_to_run is not None:
                 requested_co2_factors = {
                     round(float(co2_reduction_factor), 6)
@@ -1751,6 +1777,21 @@ DEFAULT_CO2_REDUCTION_FACTORS = [
     -0.1,
     -0.2,
 ]
+DEFAULT_CO2_REDUCTION_FACTORS_T80 = [
+    1,
+    0.9,
+    0.8,
+    0.7,
+    0.6,
+    0.5,
+    0.4,
+    0.3,
+    0.2,
+    0.1,
+    0.01,
+    -0.1,
+    -0.2,
+]
 RESULT_STORAGE_ROOT = None
 INPUT_ROOT = None
 
@@ -1836,6 +1877,13 @@ def _build_all_jobs(
 ):
     jobs = []
     for heat_grid_temperature in heat_grid_supply_temperatures:
+        co2_reduction_factors_for_temperature = _co2_reduction_factors_for_temperature(
+            co2_reduction_factors,
+            heat_grid_temperature,
+        )
+        if not co2_reduction_factors_for_temperature:
+            print(f"No CO2 reduction factors selected for T={heat_grid_temperature}.")
+            continue
         for (ueu, heat_grid_length) in ueu_cases:
             sfh_k_values = _resolve_requested_k_values(
                 base_path=base_path,
@@ -1869,7 +1917,7 @@ def _build_all_jobs(
                             mfh_k_value=mfh_k_value,
                             heat_grid_temperature=heat_grid_temperature,
                             scenario_mode=scenario_mode,
-                            co2_reduction_factors=co2_reduction_factors,
+                            co2_reduction_factors=co2_reduction_factors_for_temperature,
                         )
                         if missing_simple_co2_by_scenario == {}:
                             print(
@@ -2019,7 +2067,10 @@ if __name__ == "__main__":
         "--co2-factors",
         type=str,
         default=",".join(str(x) for x in DEFAULT_CO2_REDUCTION_FACTORS),
-        help="Comma-separated CO2 reduction factors expected as simple result files.",
+        help=(
+            "Comma-separated CO2 reduction factors expected as simple result files. "
+            "For T=80, this list is filtered to 10%-step factors."
+        ),
     )
     parser.add_argument(
         "--price-scenarios",
