@@ -65,6 +65,7 @@ def run_model(
     heat_demand_worst_case,
     heat_grid_length,
     price_scenario=None,
+    raise_on_error=False,
 ):
     es = solph.EnergySystem(
         timeindex=t1_agg,
@@ -743,6 +744,8 @@ def run_model(
             return final_results, co2_oemof_model, solver_time_s
     except Exception as e:
         print(e)
+        if raise_on_error:
+            raise
         return None, None, None
 
 
@@ -995,6 +998,8 @@ def _expected_scenario_tokens_for_mode(scenario_mode, heat_grid_temperature=None
     if scenario_mode == "capex_min_only":
         return ["cmin"]
     if scenario_mode == "capex_max_only":
+        if heat_grid_temperature is not None and int(heat_grid_temperature) == 50:
+            return []
         return ["cmax"]
     if scenario_mode in {"capex_min_max_only", "cmin_cmax_only"}:
         if heat_grid_temperature is not None and int(heat_grid_temperature) == 50:
@@ -1265,6 +1270,8 @@ def _select_scenarios_for_mode(scenarios, scenario_mode, heat_grid_temperature=N
             return selected[:1]
         raise ValueError("Scenario mode 'capex_min_only' requested, but 'capex_min_per_building' was not found.")
     if scenario_mode == "capex_max_only":
+        if heat_grid_temperature is not None and int(heat_grid_temperature) == 50:
+            return []
         selected = [scenario for scenario in scenarios if scenario.get("name") == "capex_max_per_building"]
         if selected:
             return selected[:1]
@@ -1305,6 +1312,7 @@ def run_main(
         mfh_k_value,
         scenario_mode="all",
         co2_reduction_factors_to_run=None,
+        peak_reduction_factors_to_run=None,
         missing_simple_co2_by_scenario=None,
         price_scenario_name="ref",
 ):
@@ -1528,7 +1536,16 @@ def run_main(
                 heat_demand_worst_case,
                 heat_grid_length,
                 price_scenario=price_scenario_name,
+                raise_on_error=True,
             )
+            if final_results_ref is None:
+                raise RuntimeError(
+                    "Unconstrained reference run returned no result "
+                    f"for T={heat_grid_temperature}, cluster={ueu}, "
+                    f"sfh={_format_k_for_folder(sfh_k_value)}, "
+                    f"mfh={_format_k_for_folder(mfh_k_value)}, "
+                    f"scenario={scenario_token}, price_scenario={price_scenario_name}."
+                )
             co2_reduction_factor_ref = 1
             peak_reduction_factor_ref = 1
             results_loop_to_save = {}
@@ -1593,7 +1610,11 @@ def run_main(
                     )
                     for co2_reduction_factor in co2_reduction_factors:
                         first_co2_run_in_peak_loop = True
-                        peak_reduction_factors = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.01]
+                        peak_reduction_factors = (
+                            list(peak_reduction_factors_to_run)
+                            if peak_reduction_factors_to_run is not None
+                            else [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.01]
+                        )
                         results_for_co2_step_full = {}
                         results_for_co2_step_simple = {}
 
@@ -1659,7 +1680,11 @@ def run_main(
                     peak_reference = peak_reference_save
                     co2_reference = co2_reference_save
                     co2_reduction_factors_saver=co2_reduction_factors
-                    peak_reduction_factors = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,0.01]
+                    peak_reduction_factors = (
+                        list(peak_reduction_factors_to_run)
+                        if peak_reduction_factors_to_run is not None
+                        else [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1,0.01]
+                    )
                     for peak_reduction_factor in peak_reduction_factors:
                         first_peak_run_in_co2_loop = True
                         co2_reduction_factors = co2_reduction_factors_saver
@@ -1843,12 +1868,16 @@ def _resolve_solver_threads(raw_value, n_cores, requested_workers):
         if requested_workers is None:
             return 1
         return max(1, n_cores // max(1, int(requested_workers)))
+    if value in {"0", "unlimited", "gurobi_auto"}:
+        return 0
     try:
         threads = int(value)
     except Exception as exc:
-        raise ValueError("--solver-threads must be a positive integer or 'auto'") from exc
-    if threads <= 0:
-        raise ValueError("--solver-threads must be > 0")
+        raise ValueError(
+            "--solver-threads must be a positive integer, 0, 'unlimited', 'gurobi_auto', or 'auto'"
+        ) from exc
+    if threads < 0:
+        raise ValueError("--solver-threads must be >= 0")
     return threads
 
 
@@ -1873,6 +1902,7 @@ def _build_all_jobs(
     mfh_requested,
     scenario_mode,
     co2_reduction_factors,
+    peak_reduction_factors,
     price_scenarios,
 ):
     jobs = []
@@ -1945,6 +1975,7 @@ def _build_all_jobs(
                                 mfh_k_value,
                                 scenario_mode,
                                 missing_simple_co2_by_scenario,
+                                peak_reduction_factors,
                                 price_scenario_name,
                             )
                         )
@@ -1965,6 +1996,7 @@ def wrapper(args):
         mfh_k_value,
         scenario_mode,
         missing_simple_co2_by_scenario,
+        peak_reduction_factors,
         price_scenario_name,
     ) = args
     SOLVER = solver
@@ -1985,6 +2017,7 @@ def wrapper(args):
             mfh_k_value,
             scenario_mode=scenario_mode,
             co2_reduction_factors_to_run=None,
+            peak_reduction_factors_to_run=peak_reduction_factors,
             missing_simple_co2_by_scenario=missing_simple_co2_by_scenario,
             price_scenario_name=price_scenario_name,
         )
@@ -2012,6 +2045,7 @@ def wrapper(args):
             f.write(f"price_scenario_name: {price_scenario_name}\n")
             f.write(f"solver: {SOLVER}\n")
             f.write(f"solver_threads: {SOLVER_THREADS}\n")
+            f.write(f"peak_reduction_factors: {peak_reduction_factors}\n")
             f.write(f"missing_simple_co2_by_scenario: {missing_simple_co2_by_scenario}\n")
             f.write(f"exception: {repr(e)}\n\n")
             f.write("traceback:\n")
@@ -2073,6 +2107,12 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--peak-factors",
+        type=str,
+        default="1,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1,0.01",
+        help="Comma-separated peak reduction factors to run inside each CO2 step.",
+    )
+    parser.add_argument(
         "--price-scenarios",
         type=str,
         default=",".join(DEFAULT_PRICE_SCENARIOS),
@@ -2112,6 +2152,7 @@ if __name__ == "__main__":
     mfh_requested = _parse_k_values(args.mfh_k)
     ueu_cases = _parse_ueu_cases(args.ueu_cases)
     co2_reduction_factors = _parse_float_values(args.co2_factors, "CO2 reduction factor")
+    peak_reduction_factors = _parse_float_values(args.peak_factors, "peak reduction factor")
     price_scenarios = _parse_price_scenarios(args.price_scenarios)
     if not heat_grid_supply_temperatures:
         raise ValueError("No temperatures provided.")
@@ -2119,6 +2160,8 @@ if __name__ == "__main__":
         raise ValueError("Both --sfh-k and --mfh-k are empty.")
     if not co2_reduction_factors:
         raise ValueError("No CO2 reduction factors provided.")
+    if not peak_reduction_factors:
+        raise ValueError("No peak reduction factors provided.")
     if not price_scenarios:
         raise ValueError("No price scenarios provided.")
 
@@ -2139,6 +2182,7 @@ if __name__ == "__main__":
         mfh_requested=mfh_requested,
         scenario_mode=args.scenario_mode,
         co2_reduction_factors=co2_reduction_factors,
+        peak_reduction_factors=peak_reduction_factors,
         price_scenarios=price_scenarios,
     )
     if not all_jobs_raw:
@@ -2158,7 +2202,7 @@ if __name__ == "__main__":
 
     n_cores = os.cpu_count() or 1
     SOLVER_THREADS = _resolve_solver_threads(args.solver_threads, n_cores, args.workers)
-    default_workers = max(1, n_cores // SOLVER_THREADS)
+    default_workers = 1 if SOLVER_THREADS == 0 else max(1, n_cores // SOLVER_THREADS)
     workers = args.workers if args.workers is not None else default_workers
     workers = max(1, min(workers, len(selected_jobs_raw)))
 
@@ -2171,6 +2215,7 @@ if __name__ == "__main__":
         f"host={args.host_name} total_jobs={total_jobs} "
         f"selected_range=[{args.job_start},{end_idx}) selected_jobs={len(selected_jobs)} "
         f"workers={workers} solver={SOLVER} solver_threads={SOLVER_THREADS} "
+        f"peak_factors={','.join(str(x) for x in peak_reduction_factors)} "
         f"price_scenarios={','.join(price_scenarios)} "
         f"input_root={base_path} result_storage_root={RESULT_STORAGE_ROOT if RESULT_STORAGE_ROOT else base_path}"
     )
