@@ -24,6 +24,23 @@ DEFAULT_PROCESSED_DIRS = [
     DEFAULT_INPUT_AND_RESULT_ROOT / "processed_bds_in_DENI03403000SEC4580",
 ]
 DEFAULT_COMBINATION_CONFIG = SCRIPT_DIR / "centralized_k_combinations_by_ueu.json"
+DEFAULT_COMBINATION_CONFIGS = {
+    "processed_bds_in_DENI03403000SEC4580": {
+        "heat_grid_length": 2723.29,
+        "sfh_k": [1, 2, 4, 6, 8, 10, "reference"],
+        "mfh_k": [1, 2, 3, 4, 6, 10, "reference"],
+    },
+    "processed_bds_in_DENI03403000SEC5101": {
+        "heat_grid_length": 890.35,
+        "sfh_k": [1, 2, "reference"],
+        "mfh_k": [1, 2, 3, 4, 6, 10, 14, 18, "reference"],
+    },
+    "processed_bds_in_DENI03403000SEC5658": {
+        "heat_grid_length": 1146.15,
+        "sfh_k": [1, 2, 4, 6, 8, 10, 14, 18, "reference"],
+        "mfh_k": [1, 2, 3, 4, 5, 6, "reference"],
+    },
+}
 DEFAULT_STATUS_DIRNAME = "_centralized_serial_peak_subset_status"
 DEFAULT_TEMP = 50
 DEFAULT_SCENARIO_MODE = "capex_min_only"
@@ -112,8 +129,12 @@ def _format_k(k_value: Any) -> str:
 
 
 def _load_combination_config(path: Path, ueu_name: str) -> dict[str, Any]:
-    with open(_to_long_path(path), "r", encoding="utf-8") as fh:
-        config = json.load(fh)
+    if path.is_file():
+        with open(_to_long_path(path), "r", encoding="utf-8") as fh:
+            config = json.load(fh)
+    else:
+        print(f"combination config not found, using built-in defaults: {path}", flush=True)
+        config = DEFAULT_COMBINATION_CONFIGS
     if ueu_name not in config:
         raise KeyError(f"{ueu_name} not found in {path}")
     return config[ueu_name]
