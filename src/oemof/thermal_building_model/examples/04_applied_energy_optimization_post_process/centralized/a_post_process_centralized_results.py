@@ -500,6 +500,15 @@ def _front_summary_rows(front: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _skipped_row_matches_group(
+    row: Dict[str, Any],
+    temperature_level: int,
+    constraint_type: str,
+) -> bool:
+    file_name = Path(str(row.get("file", ""))).name
+    return f"_t{temperature_level}_{constraint_type}_" in file_name
+
+
 def _save_outputs(
     output_dir: Path,
     records: Dict[Tuple[Any, ...], Dict[str, Any]],
@@ -543,26 +552,30 @@ def _process_centralized_dir(
         temperature_levels=temperature_levels,
     )
 
-    grouped: Dict[int, Dict[Tuple[Any, ...], Dict[str, Any]]] = {}
+    grouped: Dict[Tuple[int, str], Dict[Tuple[Any, ...], Dict[str, Any]]] = {}
     for key, entry in records.items():
-        grouped.setdefault(entry["metadata"]["temperature_level"], {})[key] = entry
+        metadata = entry["metadata"]
+        group_key = (metadata["temperature_level"], metadata["constraint_type"])
+        grouped.setdefault(group_key, {})[key] = entry
 
     summaries = []
-    for temperature_level, temp_records in sorted(grouped.items()):
+    for (temperature_level, constraint_type), temp_records in sorted(grouped.items()):
         front = sorted(temp_records.values(), key=_record_sort_key)
-        output_dir = output_case_root / combined_cluster / f"t{temperature_level}"
+        output_dir = output_case_root / combined_cluster / f"t{temperature_level}" / constraint_type
         temp_skipped = [
             row for row in skipped
-            if f"_t{temperature_level}_" in Path(str(row.get("file", ""))).name
+            if _skipped_row_matches_group(row, temperature_level, constraint_type)
         ]
         temp_consistency_rows = [
             row for row in consistency_rows
             if row["temperature_level"] == temperature_level
+            and row["constraint_type"] == constraint_type
         ]
         meta = {
             "ueu_case": ueu_case,
             "combined_cluster": combined_cluster,
             "temperature_level": temperature_level,
+            "constraint_type": constraint_type,
             "input_dir": str(centralized_dir),
             "input_case_root": str(input_case_root),
             "result_kind": result_kind,
@@ -579,6 +592,7 @@ def _process_centralized_dir(
                 "ueu_case": ueu_case,
                 "combined_cluster": combined_cluster,
                 "temperature_level": temperature_level,
+                "constraint_type": constraint_type,
                 "status": "ok",
                 "records": len(temp_records),
                 "front": len(front),
@@ -589,41 +603,70 @@ def _process_centralized_dir(
         )
 
     if not grouped:
-        for temperature_level in sorted({row["temperature_level"] for row in consistency_rows}):
-            output_dir = output_case_root / combined_cluster / f"t{temperature_level}"
+        consistency_groups = sorted(
+            {
+                (row["temperature_level"], row["constraint_type"])
+                for row in consistency_rows
+            }
+        )
+        for temperature_level, constraint_type in consistency_groups:
+            output_dir = output_case_root / combined_cluster / f"t{temperature_level}" / constraint_type
+            temp_skipped = [
+                row for row in skipped
+                if _skipped_row_matches_group(row, temperature_level, constraint_type)
+            ]
             temp_consistency_rows = [
                 row for row in consistency_rows
                 if row["temperature_level"] == temperature_level
+                and row["constraint_type"] == constraint_type
             ]
             meta = {
                 "ueu_case": ueu_case,
                 "combined_cluster": combined_cluster,
                 "temperature_level": temperature_level,
+                "constraint_type": constraint_type,
                 "input_dir": str(centralized_dir),
                 "input_case_root": str(input_case_root),
                 "result_kind": result_kind,
                 "keep_series": keep_series,
                 "record_count": 0,
                 "front_count": 0,
-                "skipped_count": len(skipped),
+                "skipped_count": len(temp_skipped),
                 "simple_full_consistency_issue_count": len(temp_consistency_rows),
                 "pareto_pruning": False,
             }
-            _save_outputs(output_dir, {}, [], skipped, temp_consistency_rows, meta)
+            _save_outputs(output_dir, {}, [], temp_skipped, temp_consistency_rows, meta)
 
-        summaries.append(
-            {
-                "ueu_case": ueu_case,
-                "combined_cluster": combined_cluster,
-                "temperature_level": "",
-                "status": "no_valid_records",
-                "records": 0,
-                "front": 0,
-                "skipped": len(skipped),
-                "simple_full_consistency_issues": len(consistency_rows),
-                "output_dir": "",
-            }
-        )
+            summaries.append(
+                {
+                    "ueu_case": ueu_case,
+                    "combined_cluster": combined_cluster,
+                    "temperature_level": temperature_level,
+                    "constraint_type": constraint_type,
+                    "status": "no_valid_records",
+                    "records": 0,
+                    "front": 0,
+                    "skipped": len(temp_skipped),
+                    "simple_full_consistency_issues": len(temp_consistency_rows),
+                    "output_dir": str(output_dir),
+                }
+            )
+
+        if not consistency_groups:
+            summaries.append(
+                {
+                    "ueu_case": ueu_case,
+                    "combined_cluster": combined_cluster,
+                    "temperature_level": "",
+                    "constraint_type": "",
+                    "status": "no_valid_records",
+                    "records": 0,
+                    "front": 0,
+                    "skipped": len(skipped),
+                    "simple_full_consistency_issues": len(consistency_rows),
+                    "output_dir": "",
+                }
+            )
 
     return summaries
 
@@ -647,6 +690,7 @@ def run_post_processing(
                     "ueu_case": ueu_case,
                     "combined_cluster": "",
                     "temperature_level": "",
+                    "constraint_type": "",
                     "status": "missing_input_case_root",
                     "records": 0,
                     "front": 0,
@@ -667,6 +711,7 @@ def run_post_processing(
                     "ueu_case": ueu_case,
                     "combined_cluster": "",
                     "temperature_level": "",
+                    "constraint_type": "",
                     "status": "no_centralized_dirs",
                     "records": 0,
                     "front": 0,

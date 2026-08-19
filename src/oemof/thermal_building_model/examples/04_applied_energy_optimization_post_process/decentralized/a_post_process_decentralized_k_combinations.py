@@ -1,8 +1,10 @@
 import argparse
+import json
 import multiprocessing
 import os
 import pickle
-from datetime import date
+import time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -16,21 +18,31 @@ from oemof.thermal_building_model.helpers.pareto_optimal_help_functions import (
 
 
 BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_DATA_BASE_DIR = Path(
+    r"M:\04_ArchivMA\Hillen Maximilian\Veröffentlichungen\UEU"
+)
+DEFAULT_K_CONFIG_PATH = BASE_DIR / "decentralized_k_combinations_by_ueu.json"
 DEFAULT_UEU_CASE = [
-    "processed_bds_in_DENI03403000SEC5658",
-"processed_bds_in_DENI03403000SEC5658_yes_EV",
-"processed_bds_in_DENI03403000SEC5658_yes_EV2",
-"processed_bds_in_DENI03403000SEC5658_electricity_minus20",
-"processed_bds_in_DENI03403000SEC5658_electricity_plus20",
-"processed_bds_in_DENI03403000SEC5658_electricity_feed_in_minus20",
-"processed_bds_in_DENI03403000SEC5658_electricity_feed_in_plus20",
-"processed_bds_in_DENI03403000SEC5658_electricity_feed_in_minus40",
-"processed_bds_in_DENI03403000SEC5658_electricity_feed_in_plus40",
-"processed_bds_in_DENI03403000SEC5658_hydrogen_minus20",
-"processed_bds_in_DENI03403000SEC5658_hydrogen_plus20",
-    #"processed_bds_in_DENI03403000SEC5101",
-    #"processed_bds_in_DENI03403000SEC4580",
+    "processed_bds_in_DENI03403000SEC5658_electricity_plus20",
+    "processed_bds_in_DENI03403000SEC5658_electricity_plus40",
+    "processed_bds_in_DENI03403000SEC5658_gas_plus20",
+    "processed_bds_in_DENI03403000SEC5658_gas_plus40",
+    "processed_bds_in_DENI03403000SEC5658_hydrogen_plus20",
+    "processed_bds_in_DENI03403000SEC5658_hydrogen_plus40",
+    "processed_bds_in_DENI03403000SEC5658_electricity_feed_in_plus20",
+    "processed_bds_in_DENI03403000SEC5658_electricity_feed_in_plus40",
+    "processed_bds_in_DENI03403000SEC5658_electricity_minus20",
+    "processed_bds_in_DENI03403000SEC5658_electricity_minus40",
+    "processed_bds_in_DENI03403000SEC5658_gas_minus20",
+    "processed_bds_in_DENI03403000SEC5658_gas_minus40",
+    "processed_bds_in_DENI03403000SEC5658_hydrogen_minus20",
+    "processed_bds_in_DENI03403000SEC5658_hydrogen_minus40",
+    "processed_bds_in_DENI03403000SEC5658_electricity_feed_in_minus20",
+    "processed_bds_in_DENI03403000SEC5658_electricity_feed_in_minus40",
 ]
+DEFAULT_CLUSTER_UEU_CASE = "processed_bds_in_DENI03403000SEC5658"
+DEFAULT_SFH_K = "6"
+DEFAULT_MFH_K = "1"
 DEFAULT_REFURBISHMENT_STRATEGIES = [
     "no_refurbishment",
     "usual_refurbishment",
@@ -42,12 +54,18 @@ DEFAULT_OPTIMIZATION_STRATEGIES = ["co2"]
 DEFAULT_K_VALUES_TO_OPTIMIZE_SFH = ["reference", 1, 2, 4, 6, 8, 10, 14, 18]
 DEFAULT_K_VALUES_TO_OPTIMIZE_MFH = ["reference", 1, 2, 3, 4, 5, 6]
 
-DEFAULT_K_VALUES_TO_OPTIMIZE_SFH = [6]
-DEFAULT_K_VALUES_TO_OPTIMIZE_MFH = [1]
-#DEFAULT_K_VALUES_TO_OPTIMIZE_SFH = ["reference"]
-#DEFAULT_K_VALUES_TO_OPTIMIZE_MFH = ["reference"]
+
 TODAY_DATE = date.today().strftime("%Y_%m_%d")
-DEFAULT_OUTPUT_ROOT_NAME = f"post_processed_dec_k_combinations_{TODAY_DATE}"
+DEFAULT_OUTPUT_ROOT_NAME = "post_processed_dec_k_combinations_2026_07_07"
+OUTPUT_ROOT_PREFIX = "post_processed_dec_k_combinations_"
+REQUIRED_COMBINATION_OUTPUT_FILES = (
+    "building_dict.pkl",
+    "per_building_front.pkl",
+    "combined_front.pkl",
+    "combined_package.pkl",
+    "meta.pkl",
+)
+RESULT_FOLDER_FILE_CACHE: Dict[str, List[Path]] = {}
 
 # Backward-compatible module constants.
 UEU_CASE = list(DEFAULT_UEU_CASE)
@@ -118,6 +136,149 @@ def _parse_ueu_cases(raw_value: Any) -> List[str]:
         values = [str(x).strip() for x in raw_value if str(x).strip()]
         return _dedupe_keep_order(values)
     return _parse_csv_values(raw_value)
+
+
+def _load_k_config(raw_path: Optional[str]) -> Dict[str, Any]:
+    if raw_path is None or not str(raw_path).strip():
+        return {}
+
+    path = Path(str(raw_path)).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"K-combination config not found: {path}")
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError(f"K-combination config must contain a JSON object: {path}")
+    return data
+
+
+def _normalize_k_config_values(raw_values: Any, ueu_case: str, key: str) -> List[Any]:
+    if not isinstance(raw_values, list):
+        raise ValueError(f"K-combination config for {ueu_case}.{key} must be a list.")
+
+    values = []
+    for raw_value in raw_values:
+        if isinstance(raw_value, str) and raw_value.strip().lower() == "reference":
+            values.append("reference")
+        else:
+            values.append(int(raw_value))
+    return _dedupe_keep_order(values)
+
+
+def _find_k_config_entry(k_config: Dict[str, Any], ueu_case: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    if ueu_case in k_config:
+        entry = k_config[ueu_case]
+        if not isinstance(entry, dict):
+            raise ValueError(f"K-combination config entry for {ueu_case} must be an object.")
+        return ueu_case, entry
+
+    for configured_ueu in sorted(k_config.keys(), key=len, reverse=True):
+        if str(ueu_case).startswith(f"{configured_ueu}_"):
+            entry = k_config[configured_ueu]
+            if not isinstance(entry, dict):
+                raise ValueError(f"K-combination config entry for {configured_ueu} must be an object.")
+            return configured_ueu, entry
+
+    return None, None
+
+
+def _resolve_k_values_for_ueu(
+    ueu_case: str,
+    k_config: Dict[str, Any],
+    sfh_override: Optional[List[Any]],
+    mfh_override: Optional[List[Any]],
+) -> Tuple[List[Any], List[Any], str]:
+    config_key, config_entry = _find_k_config_entry(k_config, ueu_case)
+
+    if sfh_override is not None:
+        sfh_values = list(sfh_override)
+        sfh_source = "CLI"
+    elif config_entry and "sfh_k" in config_entry:
+        sfh_values = _normalize_k_config_values(config_entry["sfh_k"], config_key or ueu_case, "sfh_k")
+        sfh_source = f"JSON:{config_key}"
+    else:
+        sfh_values = list(DEFAULT_K_VALUES_TO_OPTIMIZE_SFH)
+        sfh_source = "default"
+
+    if mfh_override is not None:
+        mfh_values = list(mfh_override)
+        mfh_source = "CLI"
+    elif config_entry and "mfh_k" in config_entry:
+        mfh_values = _normalize_k_config_values(config_entry["mfh_k"], config_key or ueu_case, "mfh_k")
+        mfh_source = f"JSON:{config_key}"
+    else:
+        mfh_values = list(DEFAULT_K_VALUES_TO_OPTIMIZE_MFH)
+        mfh_source = "default"
+
+    return sfh_values, mfh_values, f"sfh={sfh_source}, mfh={mfh_source}"
+
+
+def _latest_existing_output_root_name(result_root: Path) -> Optional[str]:
+    if not result_root.exists():
+        return None
+    candidates = [
+        path.name
+        for path in result_root.iterdir()
+        if path.is_dir() and path.name.startswith(OUTPUT_ROOT_PREFIX)
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates)[-1]
+
+
+def _combination_output_complete(output_dir: Path) -> bool:
+    return all((output_dir / filename).is_file() for filename in REQUIRED_COMBINATION_OUTPUT_FILES)
+
+
+def _existing_combination_row(output_root: Path, sfh_k: Any, mfh_k: Any) -> Optional[Dict[str, Any]]:
+    combo = _combo_name(sfh_k, mfh_k)
+    output_dir = output_root / combo
+    if not _combination_output_complete(output_dir):
+        return None
+
+    row = {
+        "combo": combo,
+        "sfh_k": _k_token(sfh_k),
+        "mfh_k": _k_token(mfh_k),
+        "status": "skipped_existing",
+        "reason": "complete output already exists",
+        "output_dir": str(output_dir),
+    }
+    meta_path = output_dir / "meta.pkl"
+    try:
+        with open(meta_path, "rb") as fh:
+            meta = pickle.load(fh)
+        row["buildings"] = meta.get("total_buildings")
+        row["combined_front_size"] = meta.get("combined_front_size")
+    except Exception:
+        pass
+    return row
+
+
+def _now_hms() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def _format_duration(seconds: Any) -> str:
+    try:
+        total_seconds = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return "?"
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:d}:{seconds:02d}"
+
+
+def _print_worker_stage(combo: str, stage: str, started_at: float, **details: Any) -> None:
+    detail_text = " ".join(f"{key}={value}" for key, value in details.items())
+    suffix = f" {detail_text}" if detail_text else ""
+    print(
+        f"[{_now_hms()}] worker pid={os.getpid()} {stage} {combo}: "
+        f"elapsed={_format_duration(time.perf_counter() - started_at)}{suffix}",
+        flush=True,
+    )
 
 
 def _resolve_workers(raw_workers: Any, serial: bool = False) -> int:
@@ -340,11 +501,20 @@ def _load_building_result_records(
     optimization_strategies: Iterable[str],
 ) -> Dict[Any, Any]:
     prefix = f"results_dec_{refurbish}_no_EV_{building_id}"
-    files = sorted(result_folder.glob(f"{prefix}_co2_*.pkl"))
+    folder_key = str(result_folder)
+    cached_files = RESULT_FOLDER_FILE_CACHE.get(folder_key)
+    if cached_files is None:
+        cached_files = sorted(path for path in result_folder.glob("*.pkl") if path.is_file())
+        RESULT_FOLDER_FILE_CACHE[folder_key] = cached_files
+
+    chunk_prefix = f"{prefix}_co2_"
+    files = [
+        path for path in cached_files
+        if path.name.startswith(chunk_prefix) and path.name.endswith(".pkl")
+    ]
     if not files:
-        fallback = result_folder / f"{prefix}.pkl"
-        if fallback.exists():
-            files = [fallback]
+        fallback_name = f"{prefix}.pkl"
+        files = [path for path in cached_files if path.name == fallback_name]
 
     merged: Dict[Any, Any] = {}
     for path in files:
@@ -458,6 +628,7 @@ def _save_combination_outputs(
 
 
 def _process_single_combination(task: Tuple[str, str, str, Any, Any, List[str], List[str], str, bool, bool]) -> Dict[str, Any]:
+    started_at = time.perf_counter()
     (
         cluster_root_raw,
         result_root_raw,
@@ -474,6 +645,20 @@ def _process_single_combination(task: Tuple[str, str, str, Any, Any, List[str], 
     result_root = Path(result_root_raw)
     output_root = Path(output_root_raw)
     combo = _combo_name(sfh_k, mfh_k)
+    _print_worker_stage(combo, "start", started_at)
+
+    def _row(status: str, reason: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
+        out = {
+            "combo": combo,
+            "sfh_k": _k_token(sfh_k),
+            "mfh_k": _k_token(mfh_k),
+            "status": status,
+            "duration_s": time.perf_counter() - started_at,
+        }
+        if reason is not None:
+            out["reason"] = reason
+        out.update(extra)
+        return out
 
     try:
         building_dict, stats = _build_decentralized_building_dict_for_combination(
@@ -487,28 +672,26 @@ def _process_single_combination(task: Tuple[str, str, str, Any, Any, List[str], 
             print_scaling_only_changed=print_scaling_only_changed,
         )
     except Exception as exc:
-        return {
-            "combo": combo,
-            "sfh_k": _k_token(sfh_k),
-            "mfh_k": _k_token(mfh_k),
-            "status": "failed",
-            "reason": str(exc),
-        }
+        return _row("failed", str(exc))
+    _print_worker_stage(
+        combo,
+        "loaded",
+        started_at,
+        sfh_buildings=stats.get("sfh_buildings"),
+        mfh_buildings=stats.get("mfh_buildings"),
+        loaded_buckets=stats.get("loaded_refurbishment_buckets"),
+        missing_buckets=stats.get("missing_refurbishment_buckets"),
+    )
 
     non_empty_buildings = [
         bid for bid, data in building_dict.items()
         if any(bool(data.get(ref, {})) for ref in refurbishment_strategies)
     ]
     if not non_empty_buildings:
-        return {
-            "combo": combo,
-            "sfh_k": _k_token(sfh_k),
-            "mfh_k": _k_token(mfh_k),
-            "status": "failed",
-            "reason": "no result files found for combination",
-        }
+        return _row("failed", "no result files found for combination")
 
     filtered_building_dict = {bid: building_dict[bid] for bid in non_empty_buildings}
+    _print_worker_stage(combo, "combine_start", started_at, buildings=len(filtered_building_dict))
     try:
         per_building_front, combined_front = combine_all_buildings(
             filtered_building_dict,
@@ -521,13 +704,14 @@ def _process_single_combination(task: Tuple[str, str, str, Any, Any, List[str], 
             max_points_after_each_merge=2000,
         )
     except Exception as exc:
-        return {
-            "combo": combo,
-            "sfh_k": _k_token(sfh_k),
-            "mfh_k": _k_token(mfh_k),
-            "status": "failed",
-            "reason": str(exc),
-        }
+        return _row("failed", str(exc))
+    _print_worker_stage(
+        combo,
+        "combine_done",
+        started_at,
+        buildings=len(filtered_building_dict),
+        combined_front=len(combined_front),
+    )
     if not combined_front:
         empty_building_fronts = [
             bid for bid, front in per_building_front.items()
@@ -543,13 +727,7 @@ def _process_single_combination(task: Tuple[str, str, str, Any, Any, List[str], 
             if len(empty_building_fronts) > 8:
                 preview += f", ... +{len(empty_building_fronts) - 8} more"
             reason = f"{reason}; sample_buildings={preview}"
-        return {
-            "combo": combo,
-            "sfh_k": _k_token(sfh_k),
-            "mfh_k": _k_token(mfh_k),
-            "status": "failed",
-            "reason": reason,
-        }
+        return _row("failed", reason)
 
     combo_output_dir = output_root / combo
     meta = {
@@ -561,34 +739,67 @@ def _process_single_combination(task: Tuple[str, str, str, Any, Any, List[str], 
         "total_buildings": len(filtered_building_dict),
         "combined_front_size": len(combined_front),
     }
-    _save_combination_outputs(
-        output_dir=combo_output_dir,
-        building_dict=filtered_building_dict,
-        per_building_front=per_building_front,
-        combined_front=combined_front,
-        meta=meta,
+    try:
+        _save_combination_outputs(
+            output_dir=combo_output_dir,
+            building_dict=filtered_building_dict,
+            per_building_front=per_building_front,
+            combined_front=combined_front,
+            meta=meta,
+        )
+    except Exception as exc:
+        return _row(
+            "failed",
+            f"failed to write outputs: {exc}",
+            output_dir=str(combo_output_dir),
+        )
+    _print_worker_stage(combo, "saved", started_at, output_dir=str(combo_output_dir))
+    return _row(
+        "ok",
+        buildings=len(filtered_building_dict),
+        combined_front_size=len(combined_front),
+        output_dir=str(combo_output_dir),
     )
-    return {
-        "combo": combo,
-        "sfh_k": _k_token(sfh_k),
-        "mfh_k": _k_token(mfh_k),
-        "status": "ok",
-        "buildings": len(filtered_building_dict),
-        "combined_front_size": len(combined_front),
-        "output_dir": str(combo_output_dir),
-    }
 
 
 def _print_row_status(row: Dict[str, Any], index: int, total: int) -> None:
     status = str(row.get("status", "unknown"))
     combo = row.get("combo")
+    prefix = f"[{_now_hms()}] [{index}/{total}]"
+    duration = row.get("duration_s")
+    duration_text = f" duration={_format_duration(duration)}" if duration is not None else ""
     if status == "ok":
         print(
-            f"[{index}/{total}] ok {combo}: buildings={row.get('buildings')} "
-            f"combined_front={row.get('combined_front_size')} -> {row.get('output_dir')}"
+            f"{prefix} ok {combo}:{duration_text} buildings={row.get('buildings')} "
+            f"combined_front={row.get('combined_front_size')} -> {row.get('output_dir')}",
+            flush=True,
+        )
+    elif status == "skipped_existing":
+        print(
+            f"{prefix} skipped existing {combo}: "
+            f"combined_front={row.get('combined_front_size', '?')} -> {row.get('output_dir')}",
+            flush=True,
         )
     else:
-        print(f"[{index}/{total}] {status} {combo}: {row.get('reason')}")
+        print(f"{prefix} {status} {combo}:{duration_text} {row.get('reason')}", flush=True)
+
+
+def _print_waiting_status(
+    started_at: float,
+    completed: int,
+    total: int,
+    pending: int,
+    last_completed_combo: Optional[str],
+    queue_preview: Optional[List[str]] = None,
+) -> None:
+    last_completed = last_completed_combo or "none yet"
+    queue_text = ", ".join(queue_preview or []) if queue_preview else "unknown"
+    print(
+        f"[{_now_hms()}] still running: completed={completed}/{total}, "
+        f"pending={pending}, elapsed={_format_duration(time.perf_counter() - started_at)}, "
+        f"last_completed={last_completed}, queue_preview={queue_text}",
+        flush=True,
+    )
 
 
 def run_all_combinations(
@@ -604,6 +815,8 @@ def run_all_combinations(
     cluster_base_dir: Optional[str] = None,
     cluster_ueu_case: Optional[str] = None,
     output_root_name: Optional[str] = None,
+    resume_latest_output_root: bool = True,
+    skip_existing: bool = True,
     print_scaling: bool = False,
     print_scaling_only_changed: bool = True,
 ) -> Path:
@@ -631,7 +844,7 @@ def run_all_combinations(
     if task_offset < 0:
         raise ValueError("task_offset must be >= 0")
 
-    result_base_dir = Path(base_dir).expanduser() if base_dir else BASE_DIR
+    result_base_dir = Path(base_dir).expanduser() if base_dir else DEFAULT_DATA_BASE_DIR
     cluster_base = Path(cluster_base_dir).expanduser() if cluster_base_dir else result_base_dir
     cluster_case = str(cluster_ueu_case).strip() if cluster_ueu_case else str(ueu_case)
 
@@ -650,7 +863,10 @@ def run_all_combinations(
 
     output_dir_name = str(output_root_name).strip() if output_root_name is not None else ""
     if not output_dir_name:
-        output_dir_name = DEFAULT_OUTPUT_ROOT_NAME
+        if resume_latest_output_root:
+            output_dir_name = _latest_existing_output_root_name(result_root) or DEFAULT_OUTPUT_ROOT_NAME
+        else:
+            output_dir_name = DEFAULT_OUTPUT_ROOT_NAME
     output_root = result_root / output_dir_name
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -678,10 +894,29 @@ def run_all_combinations(
     print(f"Task offset: {task_offset}")
     print(f"Total combos available: {total_combinations}")
     print(f"Task count: {len(all_combinations)}")
+    print(f"Resume latest output root: {resume_latest_output_root}")
+    print(f"Skip existing complete combinations: {skip_existing}")
     print(f"Print scaling: {print_scaling}")
     print(f"Print scaling only changed: {print_scaling_only_changed}")
 
     summary_rows = []
+    pending_combinations = []
+    if skip_existing:
+        for sfh_k, mfh_k in all_combinations:
+            existing_row = _existing_combination_row(output_root, sfh_k, mfh_k)
+            if existing_row is None:
+                pending_combinations.append((sfh_k, mfh_k))
+            else:
+                summary_rows.append(existing_row)
+        for index, row in enumerate(summary_rows, start=1):
+            _print_row_status(row, index, len(all_combinations))
+    else:
+        pending_combinations = list(all_combinations)
+
+    print(f"Skipped existing complete combinations: {len(summary_rows)}")
+    print(f"Pending combinations to process: {len(pending_combinations)}")
+    skipped_existing_count = len(summary_rows)
+
     tasks = [
         (
             str(cluster_root),
@@ -695,25 +930,63 @@ def run_all_combinations(
             bool(print_scaling),
             bool(print_scaling_only_changed),
         )
-        for sfh_k, mfh_k in all_combinations
+        for sfh_k, mfh_k in pending_combinations
     ]
+    if tasks:
+        initial_active = [
+            _combo_name(task[3], task[4])
+            for task in tasks[: min(workers, len(tasks))]
+        ]
+        print(
+            f"Starting up to {min(workers, len(tasks))} combinations in parallel: "
+            f"{', '.join(initial_active)}",
+            flush=True,
+        )
+
+    run_started_at = time.perf_counter()
+    last_completed_combo = summary_rows[-1].get("combo") if summary_rows else None
 
     if workers > 1 and len(tasks) > 1:
         with multiprocessing.Pool(processes=workers) as pool:
-            for index, row in enumerate(pool.imap_unordered(_process_single_combination, tasks), start=1):
+            iterator = pool.imap_unordered(_process_single_combination, tasks, chunksize=1)
+            while len(summary_rows) < len(all_combinations):
+                try:
+                    row = iterator.next(timeout=60)
+                except multiprocessing.TimeoutError:
+                    completed_pending = max(0, len(summary_rows) - skipped_existing_count)
+                    queue_preview = [
+                        _combo_name(task[3], task[4])
+                        for task in tasks[
+                            completed_pending:completed_pending + min(workers, len(tasks) - completed_pending)
+                        ]
+                    ]
+                    _print_waiting_status(
+                        started_at=run_started_at,
+                        completed=len(summary_rows),
+                        total=len(all_combinations),
+                        pending=len(all_combinations) - len(summary_rows),
+                        last_completed_combo=last_completed_combo,
+                        queue_preview=queue_preview,
+                    )
+                    continue
                 summary_rows.append(row)
-                _print_row_status(row, index, len(tasks))
+                last_completed_combo = row.get("combo")
+                _print_row_status(row, len(summary_rows), len(all_combinations))
     else:
-        for index, task in enumerate(tasks, start=1):
+        for index, task in enumerate(tasks, start=len(summary_rows) + 1):
             row = _process_single_combination(task)
             summary_rows.append(row)
-            _print_row_status(row, index, len(tasks))
+            last_completed_combo = row.get("combo")
+            _print_row_status(row, index, len(all_combinations))
 
     summary_df = pd.DataFrame(summary_rows)
     summary_csv = output_root / "summary.csv"
     summary_df.to_csv(summary_csv, index=False)
     print(f"\nDone. Summary: {summary_csv}")
-    non_ok_rows = [row for row in summary_rows if str(row.get("status", "")).lower() != "ok"]
+    non_ok_rows = [
+        row for row in summary_rows
+        if str(row.get("status", "")).lower() not in {"ok", "skipped_existing"}
+    ]
     if non_ok_rows:
         max_preview = 10
         preview = "; ".join(
@@ -761,7 +1034,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--base-dir",
         type=str,
         default=None,
-        help="Base directory containing result UEU folders. Defaults to this script directory.",
+        help=f"Base directory containing result UEU folders. Defaults to {DEFAULT_DATA_BASE_DIR}.",
     )
     parser.add_argument(
         "--cluster-base-dir",
@@ -772,20 +1045,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cluster-ueu-case",
         type=str,
-        default=None,
-        help="UEU folder name to use for clusters. Defaults to the current --ueu-case.",
+        default=DEFAULT_CLUSTER_UEU_CASE,
+        help="UEU folder name to use for clusters.",
+    )
+    parser.add_argument(
+        "--k-config-path",
+        type=str,
+        default=str(DEFAULT_K_CONFIG_PATH),
+        help="JSON file with per-UEU sfh_k/mfh_k lists. Use an empty string to disable.",
     )
     parser.add_argument(
         "--sfh-k",
         type=str,
-        default=",".join(str(x) for x in DEFAULT_K_VALUES_TO_OPTIMIZE_SFH),
-        help="Comma-separated SFH k values, e.g. reference,1,2,4",
+        default=DEFAULT_SFH_K,
+        help="Comma-separated SFH k values. Overrides --k-config-path for all selected UEUs.",
     )
     parser.add_argument(
         "--mfh-k",
         type=str,
-        default=",".join(str(x) for x in DEFAULT_K_VALUES_TO_OPTIMIZE_MFH),
-        help="Comma-separated MFH k values, e.g. reference,1,2,3",
+        default=DEFAULT_MFH_K,
+        help="Comma-separated MFH k values. Overrides --k-config-path for all selected UEUs.",
     )
     parser.add_argument(
         "--refurbishments",
@@ -802,8 +1081,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-root-name",
         type=str,
-        default=None,
+        default=DEFAULT_OUTPUT_ROOT_NAME,
         help="Output folder name below the UEU folder. Defaults to date-based folder.",
+    )
+    parser.add_argument(
+        "--no-resume-latest-output-root",
+        action="store_true",
+        help="Do not reuse the latest existing post_processed_dec_k_combinations_* folder.",
+    )
+    parser.add_argument(
+        "--force-recompute-existing",
+        action="store_true",
+        help="Recompute combinations even when complete output files already exist.",
     )
     parser.add_argument(
         "--print-scaling",
@@ -822,17 +1111,18 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    sfh_requested = _parse_k_values(args.sfh_k)
-    mfh_requested = _parse_k_values(args.mfh_k)
+    sfh_requested = _parse_k_values(args.sfh_k) if args.sfh_k is not None else None
+    mfh_requested = _parse_k_values(args.mfh_k) if args.mfh_k is not None else None
+    k_config = _load_k_config(args.k_config_path)
     selected_ueu_cases = _parse_ueu_cases(args.ueu_case)
     selected_refurbishments = _parse_csv_values(args.refurbishments)
     selected_optimization = _parse_csv_values(args.optimization_strategies)
 
     if not selected_ueu_cases:
         raise ValueError("No UEU cases provided via --ueu-case.")
-    if not sfh_requested:
+    if sfh_requested is not None and not sfh_requested:
         raise ValueError("No SFH k values provided via --sfh-k.")
-    if not mfh_requested:
+    if mfh_requested is not None and not mfh_requested:
         raise ValueError("No MFH k values provided via --mfh-k.")
     if not selected_refurbishments:
         raise ValueError("No refurbishments provided via --refurbishments.")
@@ -843,21 +1133,45 @@ if __name__ == "__main__":
 
     print(
         f"host={args.host_name} workers={workers} task_offset={args.task_offset} max_tasks={args.max_tasks} "
-        f"ueu_cases={selected_ueu_cases} base_dir={args.base_dir or str(BASE_DIR)} "
-        f"cluster_base_dir={args.cluster_base_dir or (args.base_dir or str(BASE_DIR))} "
+        f"ueu_cases={selected_ueu_cases} base_dir={args.base_dir or str(DEFAULT_DATA_BASE_DIR)} "
+        f"cluster_base_dir={args.cluster_base_dir or (args.base_dir or str(DEFAULT_DATA_BASE_DIR))} "
         f"cluster_ueu_case={args.cluster_ueu_case or '<same_as_ueu_case>'} "
-        f"sfh_k={[ _format_k_for_log(x) for x in sfh_requested ]} "
-        f"mfh_k={[ _format_k_for_log(x) for x in mfh_requested ]} "
+        f"k_config_path={args.k_config_path or '<disabled>'} "
+        f"sfh_k_override={([_format_k_for_log(x) for x in sfh_requested] if sfh_requested is not None else '<per-UEU JSON/default>')} "
+        f"mfh_k_override={([_format_k_for_log(x) for x in mfh_requested] if mfh_requested is not None else '<per-UEU JSON/default>')} "
         f"refurbishments={selected_refurbishments} optimization_strategies={selected_optimization} "
+        f"resume_latest_output_root={not args.no_resume_latest_output_root} "
+        f"skip_existing={not args.force_recompute_existing} "
         f"print_scaling={args.print_scaling} print_scaling_all={args.print_scaling_all}"
     )
 
+    result_base_dir = Path(args.base_dir).expanduser() if args.base_dir else DEFAULT_DATA_BASE_DIR
+    missing_ueu_cases = []
     for index, selected_ueu in enumerate(selected_ueu_cases, start=1):
         print(f"\n=== UEU [{index}/{len(selected_ueu_cases)}]: {selected_ueu} ===")
+        result_root = _resolve_cluster_root(str(selected_ueu), result_base_dir)
+        if not result_root.exists():
+            missing_ueu_cases.append(str(selected_ueu))
+            print(
+                f"WARNING: skip missing result UEU folder: {result_root}",
+                flush=True,
+            )
+            continue
+        sfh_for_ueu, mfh_for_ueu, k_source = _resolve_k_values_for_ueu(
+            selected_ueu,
+            k_config,
+            sfh_requested,
+            mfh_requested,
+        )
+        print(
+            f"K values ({k_source}): "
+            f"sfh_k={[_format_k_for_log(x) for x in sfh_for_ueu]} "
+            f"mfh_k={[_format_k_for_log(x) for x in mfh_for_ueu]}"
+        )
         run_all_combinations(
             ueu_case=selected_ueu,
-            sfh_k_values=sfh_requested,
-            mfh_k_values=mfh_requested,
+            sfh_k_values=sfh_for_ueu,
+            mfh_k_values=mfh_for_ueu,
             refurbishment_strategies=selected_refurbishments,
             optimization_strategies=selected_optimization,
             workers=workers,
@@ -867,6 +1181,15 @@ if __name__ == "__main__":
             cluster_base_dir=args.cluster_base_dir,
             cluster_ueu_case=args.cluster_ueu_case,
             output_root_name=args.output_root_name,
+            resume_latest_output_root=(not args.no_resume_latest_output_root),
+            skip_existing=(not args.force_recompute_existing),
             print_scaling=args.print_scaling,
             print_scaling_only_changed=(not args.print_scaling_all),
+        )
+
+    if missing_ueu_cases:
+        print(
+            "\nSkipped missing UEU folders: "
+            + ", ".join(missing_ueu_cases),
+            flush=True,
         )
