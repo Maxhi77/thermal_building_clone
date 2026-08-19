@@ -1315,12 +1315,14 @@ def run_main(
         peak_reduction_factors_to_run=None,
         missing_simple_co2_by_scenario=None,
         price_scenario_name="ref",
+        output_ueu=None,
 ):
     base_path = _get_input_root()
     result_storage_root = _get_result_storage_root()
     price_scenario_name = _normalize_price_scenario_name(price_scenario_name)
     price_scenario_config = _resolve_price_scenario_config(price_scenario_name)
-    output_cluster_name = _scenario_output_cluster_name(ueu, price_scenario_name)
+    output_cluster_base_name = output_ueu if output_ueu is not None else ueu
+    output_cluster_name = _scenario_output_cluster_name(output_cluster_base_name, price_scenario_name)
     directory_path =os.path.join(base_path, ueu)
     number_of_time_steps = 8760
     sfh_cluster = _load_cluster_for_type(base_path, ueu, "SFH", sfh_k_value)

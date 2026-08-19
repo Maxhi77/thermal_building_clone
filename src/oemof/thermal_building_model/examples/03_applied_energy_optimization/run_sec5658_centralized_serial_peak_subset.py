@@ -94,6 +94,30 @@ def _parse_path_list(raw: str) -> list[Path]:
     return paths
 
 
+def _resolve_input_processed_dir(path: Path, input_root: Path | None) -> Path:
+    if path.is_absolute():
+        return path.resolve()
+    if input_root is not None:
+        return (input_root / path).resolve()
+    return path.resolve()
+
+
+def _derive_output_processed_dir(
+    input_processed_dir: Path,
+    *,
+    output_dir: Path | None,
+    output_ueu_name: str | None,
+    output_suffix: str,
+    result_storage_root: Path | None,
+) -> Path:
+    if output_dir is not None:
+        return output_dir.resolve()
+
+    output_root = result_storage_root.resolve() if result_storage_root is not None else input_processed_dir.parent
+    output_name = output_ueu_name.strip() if output_ueu_name else f"{input_processed_dir.name}{output_suffix}"
+    return (output_root / output_name).resolve()
+
+
 def _normalize_scenario_mode(raw: str) -> str:
     aliases = {
         "capex_min": "capex_min_only",
@@ -323,6 +347,36 @@ def parse_args() -> argparse.Namespace:
         default=";".join(str(path) for path in DEFAULT_PROCESSED_DIRS),
         help="Semicolon-separated processed directories, run in this order.",
     )
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        default=None,
+        help="Base directory containing input processed UEU folders. Relative processed dirs are resolved below this.",
+    )
+    parser.add_argument(
+        "--result-storage-root",
+        type=Path,
+        default=None,
+        help="Base directory where output processed UEU folders are written. Default: input processed dir parent.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Single output processed UEU folder. Only valid with one input processed dir.",
+    )
+    parser.add_argument(
+        "--output-ueu-name",
+        type=str,
+        default=None,
+        help="Output UEU folder name below --result-storage-root, e.g. processed_bds_in_DENI03403000SEC5658_time.",
+    )
+    parser.add_argument(
+        "--output-suffix",
+        type=str,
+        default="",
+        help="Suffix appended to the input UEU folder name for output, e.g. _time.",
+    )
     parser.add_argument("--combination-config", type=Path, default=DEFAULT_COMBINATION_CONFIG)
     parser.add_argument("--temp", type=int, default=DEFAULT_TEMP)
     parser.add_argument("--scenario-mode", type=str, default=DEFAULT_SCENARIO_MODE)
@@ -353,9 +407,12 @@ def parse_args() -> argparse.Namespace:
 
 def _run_config(
     args: argparse.Namespace,
-    processed_dir: Path,
-    input_and_result_root: Path,
-    ueu_name: str,
+    input_processed_dir: Path,
+    output_processed_dir: Path,
+    input_root: Path,
+    output_root: Path,
+    input_ueu_name: str,
+    output_ueu_name: str,
     heat_grid_length: float,
     sfh_values: list[Any],
     mfh_values: list[Any],
@@ -374,13 +431,13 @@ def _run_config(
         print(f"skip run temp={temp} scenario_mode={scenario_mode}: no expected scenarios")
         return
 
-    status_dir = processed_dir / DEFAULT_STATUS_DIRNAME
+    status_dir = output_processed_dir / DEFAULT_STATUS_DIRNAME
     status_csv = status_dir / "run_status.csv"
     error_dir = status_dir / "errors"
     _mkdir(status_dir)
 
-    CEN.INPUT_ROOT = str(input_and_result_root)
-    CEN.RESULT_STORAGE_ROOT = str(input_and_result_root)
+    CEN.INPUT_ROOT = str(input_root)
+    CEN.RESULT_STORAGE_ROOT = str(output_root)
     CEN.SOLVER = str(args.solver)
     CEN.SOLVER_THREADS = int(args.solver_threads)
 
@@ -388,7 +445,10 @@ def _run_config(
     if args.max_combos is not None:
         combos = combos[: args.max_combos]
 
-    print(f"processed_dir={processed_dir}")
+    print(f"input_processed_dir={input_processed_dir}")
+    print(f"output_processed_dir={output_processed_dir}")
+    print(f"input_ueu={input_ueu_name}")
+    print(f"output_ueu={output_ueu_name}")
     print(f"input_root={CEN.INPUT_ROOT}")
     print(f"result_storage_root={CEN.RESULT_STORAGE_ROOT}")
     print(f"combinations={len(combos)}")
@@ -404,7 +464,7 @@ def _run_config(
         }
         if not args.overwrite:
             missing_simple_co2_by_scenario = _missing_simple_co2_by_scenario_for_combo(
-                processed_dir,
+                output_processed_dir,
                 sfh_k,
                 mfh_k,
                 temp,
@@ -419,8 +479,8 @@ def _run_config(
                 status_csv,
                 _status_row(
                     "skipped_complete",
-                    processed_dir,
-                    ueu_name,
+                    output_processed_dir,
+                    output_ueu_name,
                     temp,
                     scenario_mode,
                     sfh_k,
@@ -440,8 +500,8 @@ def _run_config(
             status_csv,
             _status_row(
                 "dry_run_planned" if args.dry_run else "start",
-                processed_dir,
-                ueu_name,
+                output_processed_dir,
+                output_ueu_name,
                 temp,
                 scenario_mode,
                 sfh_k,
@@ -457,7 +517,7 @@ def _run_config(
         try:
             CEN.run_main(
                 heat_grid_temperature=temp,
-                ueu=ueu_name,
+                ueu=input_ueu_name,
                 heat_grid_length=heat_grid_length,
                 sfh_k_value=sfh_k,
                 mfh_k_value=mfh_k,
@@ -466,6 +526,7 @@ def _run_config(
                 peak_reduction_factors_to_run=peak_factors,
                 missing_simple_co2_by_scenario=missing_simple_co2_by_scenario,
                 price_scenario_name=args.price_scenario,
+                output_ueu=output_ueu_name,
             )
         except Exception as exc:
             _mkdir(error_dir)
@@ -482,8 +543,8 @@ def _run_config(
                 status_csv,
                 _status_row(
                     "error",
-                    processed_dir,
-                    ueu_name,
+                    output_processed_dir,
+                    output_ueu_name,
                     temp,
                     scenario_mode,
                     sfh_k,
@@ -496,7 +557,7 @@ def _run_config(
             continue
 
         complete = _combo_complete_for_scenarios(
-            processed_dir, sfh_k, mfh_k, temp, scenario_tokens, co2_factors, peak_factors
+            output_processed_dir, sfh_k, mfh_k, temp, scenario_tokens, co2_factors, peak_factors
         )
         status = "finished_complete" if complete else "finished_incomplete"
         print(f"{status} {label}", flush=True)
@@ -504,8 +565,8 @@ def _run_config(
             status_csv,
             _status_row(
                 status,
-                processed_dir,
-                ueu_name,
+                output_processed_dir,
+                output_ueu_name,
                 temp,
                 scenario_mode,
                 sfh_k,
@@ -522,29 +583,52 @@ def main() -> None:
     args = parse_args()
     processed_dirs = [args.processed_dir] if args.processed_dir is not None else _parse_path_list(args.processed_dirs)
     run_configs = _parse_run_configs(args.run_configs)
+    input_root = args.input_root.resolve() if args.input_root is not None else None
+    result_storage_root = args.result_storage_root.resolve() if args.result_storage_root is not None else None
+
+    if args.output_dir is not None and len(processed_dirs) != 1:
+        raise SystemExit("--output-dir is only valid with exactly one input processed dir.")
+    if args.output_dir is not None and (args.output_ueu_name or args.output_suffix):
+        raise SystemExit("--output-dir cannot be combined with --output-ueu-name or --output-suffix.")
+    if args.output_ueu_name is not None and len(processed_dirs) != 1:
+        raise SystemExit("--output-ueu-name is only valid with exactly one input processed dir.")
 
     print(f"processed_dirs={[str(path) for path in processed_dirs]}")
     print(f"run_configs={run_configs}")
     for processed_index, processed_dir_raw in enumerate(processed_dirs, start=1):
-        processed_dir = processed_dir_raw.resolve()
-        if not processed_dir.is_dir():
-            raise SystemExit(f"Processed directory not found: {processed_dir}")
+        input_processed_dir = _resolve_input_processed_dir(processed_dir_raw, input_root)
+        if not input_processed_dir.is_dir():
+            raise SystemExit(f"Input processed directory not found: {input_processed_dir}")
 
-        input_and_result_root = processed_dir.parent
-        ueu_name = processed_dir.name
-        config = _load_combination_config(args.combination_config, ueu_name)
+        output_processed_dir = _derive_output_processed_dir(
+            input_processed_dir,
+            output_dir=args.output_dir,
+            output_ueu_name=args.output_ueu_name,
+            output_suffix=args.output_suffix,
+            result_storage_root=result_storage_root,
+        )
+        input_and_result_root = input_processed_dir.parent
+        output_root = output_processed_dir.parent
+        input_ueu_name = input_processed_dir.name
+        output_ueu_name = output_processed_dir.name
+
+        config = _load_combination_config(args.combination_config, input_ueu_name)
         heat_grid_length = float(config["heat_grid_length"])
         sfh_values = config["sfh_k"]
         mfh_values = config["mfh_k"]
 
-        print(f"\nprocessed_dir {processed_index}/{len(processed_dirs)} {processed_dir}")
+        print(f"\nprocessed_dir {processed_index}/{len(processed_dirs)} {input_processed_dir}")
+        print(f"output_dir {output_processed_dir}")
         for run_index, (temp, scenario_mode) in enumerate(run_configs, start=1):
             print(f"\nrun_config {run_index}/{len(run_configs)} temp={temp} scenario_mode={scenario_mode}")
             _run_config(
                 args,
-                processed_dir,
+                input_processed_dir,
+                output_processed_dir,
                 input_and_result_root,
-                ueu_name,
+                output_root,
+                input_ueu_name,
+                output_ueu_name,
                 heat_grid_length,
                 sfh_values,
                 mfh_values,
