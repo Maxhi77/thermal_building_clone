@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib.util
+import multiprocessing as mp
 import os
 import pickle
 import sys
+import time
 import traceback
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,7 +35,7 @@ DEFAULT_SFH_K = "reference"
 DEFAULT_MFH_K = "reference"
 DEFAULT_STATUS_DIRNAME = "_centralized_price_sensitivity_status"
 DEFAULT_SOLVER = "gurobi"
-DEFAULT_SOLVER_THREADS = 0
+DEFAULT_SOLVER_THREADS = "auto"
 RUN_CONFIGS = [
     {
         "temp": 50,
@@ -82,6 +85,29 @@ def _to_long_path(path: Path) -> str:
 
 def _mkdir(path: Path) -> None:
     Path(_to_long_path(path)).mkdir(parents=True, exist_ok=True)
+
+
+@contextmanager
+def _job_file_lock(lock_path: Path, poll_seconds: float = 5.0):
+    _mkdir(lock_path.parent)
+    lock_name = _to_long_path(lock_path)
+    while True:
+        try:
+            fd = os.open(lock_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(f"pid={os.getpid()}\n")
+                fh.write(f"created={datetime.now().isoformat(timespec='seconds')}\n")
+            break
+        except FileExistsError:
+            print(f"waiting for job lock: {lock_path}", flush=True)
+            time.sleep(poll_seconds)
+    try:
+        yield
+    finally:
+        try:
+            os.remove(lock_name)
+        except FileNotFoundError:
+            pass
 
 
 def _format_k(k_value: Any) -> str:
@@ -314,12 +340,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heat-grid-length", type=float, default=DEFAULT_HEAT_GRID_LENGTH)
     parser.add_argument("--sfh-k", type=str, default=DEFAULT_SFH_K)
     parser.add_argument("--mfh-k", type=str, default=DEFAULT_MFH_K)
+    parser.add_argument("--host-name", type=str, default="unknown")
+    parser.add_argument("--job-start", type=int, default=0, help="Start index in the global job list.")
+    parser.add_argument("--max-jobs", type=int, default=None, help="Maximum number of selected jobs to run.")
+    parser.add_argument("--workers", type=int, default=None, help="Number of parallel worker processes.")
+    parser.add_argument("--serial", action="store_true", help="Run selected jobs sequentially.")
     parser.add_argument("--solver", type=str, default=DEFAULT_SOLVER)
     parser.add_argument(
         "--solver-threads",
-        type=int,
+        type=str,
         default=DEFAULT_SOLVER_THREADS,
-        help="Use 0 for Gurobi automatic thread choice.",
+        help="Solver threads per job, or 'auto' to divide CPU cores by --workers.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -331,6 +362,56 @@ def _parse_k(raw: str) -> Any:
     if value.lower() == "reference":
         return "reference"
     return int(value)
+
+
+def _resolve_solver_threads(raw_value: Any, n_cores: int, requested_workers: int | None) -> int:
+    value = str(raw_value).strip().lower()
+    if not value or value == "auto":
+        if requested_workers is None:
+            return 1
+        return max(1, n_cores // max(1, int(requested_workers)))
+    if value in {"0", "unlimited", "gurobi_auto"}:
+        return 0
+    try:
+        threads = int(value)
+    except Exception as exc:
+        raise ValueError(
+            "--solver-threads must be a positive integer, 0, 'unlimited', 'gurobi_auto', or 'auto'"
+        ) from exc
+    if threads < 0:
+        raise ValueError("--solver-threads must be >= 0")
+    return threads
+
+
+def _build_jobs(
+    *,
+    args: argparse.Namespace,
+    input_processed_dir: Path,
+    output_root: Path,
+    input_root: Path,
+    output_base_ueu_name: str,
+    price_scenarios: list[str],
+    sfh_k: Any,
+    mfh_k: Any,
+) -> list[tuple[Any, ...]]:
+    jobs = []
+    for price_scenario in price_scenarios:
+        normalized_price_scenario = normalize_price_scenario_name(price_scenario)
+        for run_config in RUN_CONFIGS:
+            jobs.append(
+                (
+                    args,
+                    input_processed_dir,
+                    output_root,
+                    input_root,
+                    output_base_ueu_name,
+                    normalized_price_scenario,
+                    sfh_k,
+                    mfh_k,
+                    run_config,
+                )
+            )
+    return jobs
 
 
 def _run_one_config(
@@ -428,19 +509,21 @@ def _run_one_config(
     try:
         if CEN is None:
             raise RuntimeError("Centralized module was not loaded.")
-        CEN.run_main(
-            heat_grid_temperature=temp,
-            ueu=input_processed_dir.name,
-            heat_grid_length=float(args.heat_grid_length),
-            sfh_k_value=sfh_k,
-            mfh_k_value=mfh_k,
-            scenario_mode=scenario_mode,
-            co2_reduction_factors_to_run=co2_factors,
-            peak_reduction_factors_to_run=peak_factors,
-            missing_simple_co2_by_scenario=missing_simple_co2_by_scenario,
-            price_scenario_name=price_scenario,
-            output_ueu=output_base_ueu_name,
-        )
+        lock_path = status_dir / "locks" / f"T{temp}.lock"
+        with _job_file_lock(lock_path):
+            CEN.run_main(
+                heat_grid_temperature=temp,
+                ueu=input_processed_dir.name,
+                heat_grid_length=float(args.heat_grid_length),
+                sfh_k_value=sfh_k,
+                mfh_k_value=mfh_k,
+                scenario_mode=scenario_mode,
+                co2_reduction_factors_to_run=co2_factors,
+                peak_reduction_factors_to_run=peak_factors,
+                missing_simple_co2_by_scenario=missing_simple_co2_by_scenario,
+                price_scenario_name=price_scenario,
+                output_ueu=output_base_ueu_name,
+            )
     except Exception as exc:
         _mkdir(error_dir)
         error_path = error_dir / (
@@ -498,13 +581,68 @@ def _run_one_config(
     )
 
 
-def main() -> None:
+def _worker(job: tuple[Any, ...]) -> None:
     global CEN
+    (
+        job_idx,
+        host_name,
+        solver,
+        solver_threads,
+        args,
+        input_processed_dir,
+        output_root,
+        input_root,
+        output_base_ueu_name,
+        price_scenario,
+        sfh_k,
+        mfh_k,
+        run_config,
+    ) = job
+
+    if not args.dry_run:
+        CEN = _load_centralized_module()
+        CEN.INPUT_ROOT = str(input_root)
+        CEN.RESULT_STORAGE_ROOT = str(output_root)
+        CEN.SOLVER = str(solver).strip()
+        CEN.SOLVER_THREADS = int(solver_threads)
+
+    print(
+        f"host={host_name} job={job_idx} dispatch: "
+        f"price={price_scenario} temp={run_config['temp']} "
+        f"scenario_mode={run_config['scenario_mode']} "
+        f"solver={str(solver).strip()} solver_threads={int(solver_threads)}",
+        flush=True,
+    )
+    try:
+        _run_one_config(
+            args=args,
+            input_processed_dir=input_processed_dir,
+            output_root=output_root,
+            input_root=input_root,
+            output_base_ueu_name=output_base_ueu_name,
+            price_scenario=price_scenario,
+            sfh_k=sfh_k,
+            mfh_k=mfh_k,
+            run_config=run_config,
+        )
+    except Exception:
+        print(
+            f"host={host_name} job={job_idx} failed before job status logging:\n"
+            f"{traceback.format_exc()}",
+            flush=True,
+        )
+
+
+def main() -> None:
     args = parse_args()
+    if args.job_start < 0:
+        raise ValueError("--job-start must be >= 0")
+    if args.max_jobs is not None and args.max_jobs <= 0:
+        raise ValueError("--max-jobs must be > 0 when provided")
+    if args.workers is not None and args.workers <= 0:
+        raise ValueError("--workers must be > 0 when provided")
     if not str(args.solver).strip():
         raise ValueError("--solver must not be empty")
-    if args.solver_threads < 0:
-        raise ValueError("--solver-threads must be >= 0")
     if args.output_ueu_name and args.output_suffix:
         raise ValueError("--output-ueu-name and --output-suffix are mutually exclusive.")
 
@@ -528,13 +666,37 @@ def main() -> None:
     sfh_k = _parse_k(args.sfh_k)
     mfh_k = _parse_k(args.mfh_k)
 
-    if not args.dry_run:
-        CEN = _load_centralized_module()
-        CEN.INPUT_ROOT = str(input_root)
-        CEN.RESULT_STORAGE_ROOT = str(output_root)
-        CEN.SOLVER = str(args.solver).strip()
-        CEN.SOLVER_THREADS = int(args.solver_threads)
     _mkdir(output_root)
+    jobs_raw = _build_jobs(
+        args=args,
+        input_processed_dir=input_processed_dir,
+        output_root=output_root,
+        input_root=input_root,
+        output_base_ueu_name=output_base_ueu_name,
+        price_scenarios=price_scenarios,
+        sfh_k=sfh_k,
+        mfh_k=mfh_k,
+    )
+    total_jobs = len(jobs_raw)
+    if args.job_start >= total_jobs:
+        print(f"No jobs for host {args.host_name}: job_start={args.job_start} >= total_jobs={total_jobs}")
+        raise SystemExit(0)
+    end_idx = total_jobs if args.max_jobs is None else min(total_jobs, args.job_start + args.max_jobs)
+    selected_jobs_raw = jobs_raw[args.job_start:end_idx]
+    if not selected_jobs_raw:
+        print("No selected jobs after slicing.")
+        raise SystemExit(0)
+
+    n_cores = os.cpu_count() or 1
+    solver_threads = _resolve_solver_threads(args.solver_threads, n_cores, args.workers)
+    default_workers = 1 if solver_threads == 0 else max(1, n_cores // solver_threads)
+    workers = args.workers if args.workers is not None else default_workers
+    workers = max(1, min(workers, len(selected_jobs_raw)))
+    solver = str(args.solver).strip()
+    selected_jobs = [
+        (args.job_start + idx, args.host_name, solver, solver_threads, *job)
+        for idx, job in enumerate(selected_jobs_raw)
+    ]
 
     print(f"input_processed_dir={input_processed_dir}")
     print(f"input_root={input_root}")
@@ -543,24 +705,20 @@ def main() -> None:
     print(f"price_scenarios={price_scenarios}")
     print(f"sfh_k={_format_k(sfh_k)} mfh_k={_format_k(mfh_k)}")
     print(f"run_configs={RUN_CONFIGS}")
-    print(f"solver={str(args.solver).strip()} solver_threads={int(args.solver_threads)}")
+    print(
+        f"host={args.host_name} total_jobs={total_jobs} "
+        f"selected_range=[{args.job_start},{end_idx}) selected_jobs={len(selected_jobs)} "
+        f"workers={workers} solver={solver} solver_threads={solver_threads}"
+    )
     if args.dry_run:
         print("dry_run=true")
 
-    for price_scenario in price_scenarios:
-        normalized_price_scenario = normalize_price_scenario_name(price_scenario)
-        for run_config in RUN_CONFIGS:
-            _run_one_config(
-                args=args,
-                input_processed_dir=input_processed_dir,
-                output_root=output_root,
-                input_root=input_root,
-                output_base_ueu_name=output_base_ueu_name,
-                price_scenario=normalized_price_scenario,
-                sfh_k=sfh_k,
-                mfh_k=mfh_k,
-                run_config=run_config,
-            )
+    if args.serial or workers == 1:
+        for job in selected_jobs:
+            _worker(job)
+    else:
+        with mp.Pool(processes=workers) as pool:
+            pool.map(_worker, selected_jobs)
 
 
 if __name__ == "__main__":
