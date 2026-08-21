@@ -2,6 +2,7 @@ import argparse
 import csv
 import pickle
 import re
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -9,19 +10,30 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+SRC_DIR = Path(__file__).resolve().parents[5]
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from oemof.thermal_building_model.helpers.price_scenarios import (
+    PRICE_SCENARIO_CONFIGS,
+    normalize_price_scenario_name,
+    parse_price_scenarios,
+    scenario_output_cluster_name,
+)
+
 
 BASE_DIR = Path(__file__).resolve().parent
 EXAMPLES_DIR = BASE_DIR.parents[1]
-DEFAULT_ARCHIVE_INPUT_ROOT = Path(
+DEFAULT_ARCHIVE_UEU_CASE_ROOT = Path(
     r"M:\04_ArchivMA\Hillen Maximilian\Veröffentlichungen\UEU"
     r"\processed_bds_in_DENI03403000SEC5658"
 )
 DEFAULT_INPUT_ROOT = (
-    DEFAULT_ARCHIVE_INPUT_ROOT
-    if DEFAULT_ARCHIVE_INPUT_ROOT.exists()
+    DEFAULT_ARCHIVE_UEU_CASE_ROOT.parent
+    if DEFAULT_ARCHIVE_UEU_CASE_ROOT.exists()
     else EXAMPLES_DIR / "03_applied_energy_optimization"
 )
-DEFAULT_UEU_CASE = "processed_bds_in_DENI03403000SEC4580"
+DEFAULT_UEU_CASE = "processed_bds_in_DENI03403000SEC5658"
 DEFAULT_OUTPUT_ROOT = EXAMPLES_DIR / f"04_post_processed_cen_{date.today().strftime('%Y%m%d')}"
 
 RESULT_PATTERN = re.compile(
@@ -51,7 +63,37 @@ def _looks_like_ueu_case_dir(path: Path) -> bool:
     return path.name.startswith("processed_bds_in")
 
 
-def _resolve_input_cases(input_root: Path, ueu_cases: List[str]) -> List[Tuple[str, Path]]:
+def _infer_price_scenario_name(ueu_case: str, record: Optional[Dict[str, Any]] = None) -> str:
+    if isinstance(record, dict) and record.get("price_scenario_name") is not None:
+        return normalize_price_scenario_name(record.get("price_scenario_name"))
+
+    for scenario_name in sorted(PRICE_SCENARIO_CONFIGS, key=len, reverse=True):
+        if scenario_name == "ref":
+            continue
+        if str(ueu_case).endswith(f"_{scenario_name}"):
+            return scenario_name
+    return "ref"
+
+
+def _infer_base_ueu_case(ueu_case: str) -> str:
+    price_scenario_name = _infer_price_scenario_name(ueu_case)
+    if price_scenario_name == "ref":
+        return ueu_case
+    suffix = f"_{price_scenario_name}"
+    return str(ueu_case)[: -len(suffix)] if str(ueu_case).endswith(suffix) else ueu_case
+
+
+def _parse_price_scenarios(raw: Optional[str]) -> List[str]:
+    if raw is None:
+        return []
+    return parse_price_scenarios(raw)
+
+
+def _resolve_input_cases(
+    input_root: Path,
+    ueu_cases: List[str],
+    price_scenarios: List[str],
+) -> List[Tuple[str, Path]]:
     if _looks_like_ueu_case_dir(input_root):
         if ueu_cases and input_root.name not in ueu_cases:
             raise ValueError(
@@ -63,7 +105,15 @@ def _resolve_input_cases(input_root: Path, ueu_cases: List[str]) -> List[Tuple[s
     if not ueu_cases:
         ueu_cases = [DEFAULT_UEU_CASE]
 
-    return [(ueu_case, input_root / ueu_case) for ueu_case in ueu_cases]
+    resolved_cases = []
+    for ueu_case in ueu_cases:
+        if price_scenarios:
+            for price_scenario in price_scenarios:
+                output_case = scenario_output_cluster_name(ueu_case, price_scenario)
+                resolved_cases.append((output_case, input_root / output_case))
+        else:
+            resolved_cases.append((ueu_case, input_root / ueu_case))
+    return resolved_cases
 
 
 def _match_result_file(path: Path) -> Optional[Dict[str, Any]]:
@@ -298,8 +348,12 @@ def _load_centralized_records_for_dir(
                 keep_series=keep_series,
             )
             electricity_grid, electricity_grid_compat = _electricity_grid_compat(record, keep_series)
+            price_scenario_name = _infer_price_scenario_name(ueu_case, record)
             metadata = {
                 "ueu_case": ueu_case,
+                "base_ueu_case": _infer_base_ueu_case(ueu_case),
+                "price_scenario_name": price_scenario_name,
+                "price_scenario": record.get("price_scenario"),
                 "combined_cluster": combined_cluster,
                 "temperature_level": info["temperature"],
                 "constraint_type": info["constraint"],
@@ -358,6 +412,8 @@ def _collect_simple_full_consistency_rows(
     for path, info in _iter_result_files(centralized_dir, "both", temperature_levels):
         base = {
             "ueu_case": ueu_case,
+            "base_ueu_case": _infer_base_ueu_case(ueu_case),
+            "price_scenario_name": _infer_price_scenario_name(ueu_case),
             "combined_cluster": combined_cluster,
             "temperature_level": info["temperature"],
             "constraint_type": info["constraint"],
@@ -475,6 +531,8 @@ def _front_summary_rows(front: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             {
                 "idx": idx,
                 "ueu_case": metadata["ueu_case"],
+                "base_ueu_case": metadata.get("base_ueu_case"),
+                "price_scenario_name": metadata.get("price_scenario_name"),
                 "combined_cluster": metadata["combined_cluster"],
                 "temperature_level": metadata["temperature_level"],
                 "constraint_type": metadata["constraint_type"],
@@ -573,6 +631,8 @@ def _process_centralized_dir(
         ]
         meta = {
             "ueu_case": ueu_case,
+            "base_ueu_case": _infer_base_ueu_case(ueu_case),
+            "price_scenario_name": _infer_price_scenario_name(ueu_case),
             "combined_cluster": combined_cluster,
             "temperature_level": temperature_level,
             "constraint_type": constraint_type,
@@ -590,6 +650,8 @@ def _process_centralized_dir(
         summaries.append(
             {
                 "ueu_case": ueu_case,
+                "base_ueu_case": _infer_base_ueu_case(ueu_case),
+                "price_scenario_name": _infer_price_scenario_name(ueu_case),
                 "combined_cluster": combined_cluster,
                 "temperature_level": temperature_level,
                 "constraint_type": constraint_type,
@@ -622,6 +684,8 @@ def _process_centralized_dir(
             ]
             meta = {
                 "ueu_case": ueu_case,
+                "base_ueu_case": _infer_base_ueu_case(ueu_case),
+                "price_scenario_name": _infer_price_scenario_name(ueu_case),
                 "combined_cluster": combined_cluster,
                 "temperature_level": temperature_level,
                 "constraint_type": constraint_type,
@@ -640,6 +704,8 @@ def _process_centralized_dir(
             summaries.append(
                 {
                     "ueu_case": ueu_case,
+                    "base_ueu_case": _infer_base_ueu_case(ueu_case),
+                    "price_scenario_name": _infer_price_scenario_name(ueu_case),
                     "combined_cluster": combined_cluster,
                     "temperature_level": temperature_level,
                     "constraint_type": constraint_type,
@@ -656,6 +722,8 @@ def _process_centralized_dir(
             summaries.append(
                 {
                     "ueu_case": ueu_case,
+                    "base_ueu_case": _infer_base_ueu_case(ueu_case),
+                    "price_scenario_name": _infer_price_scenario_name(ueu_case),
                     "combined_cluster": combined_cluster,
                     "temperature_level": "",
                     "constraint_type": "",
@@ -675,6 +743,7 @@ def run_post_processing(
     input_root: Path,
     output_root: Path,
     ueu_cases: List[str],
+    price_scenarios: List[str],
     combined_cluster_glob: str,
     result_kind: str,
     temperature_levels: Optional[set[int]],
@@ -682,12 +751,14 @@ def run_post_processing(
 ) -> List[Dict[str, Any]]:
     all_summaries: List[Dict[str, Any]] = []
 
-    for ueu_case, input_case_root in _resolve_input_cases(input_root, ueu_cases):
+    for ueu_case, input_case_root in _resolve_input_cases(input_root, ueu_cases, price_scenarios):
         output_case_root = output_root / ueu_case
         if not input_case_root.exists():
             all_summaries.append(
                 {
                     "ueu_case": ueu_case,
+                    "base_ueu_case": _infer_base_ueu_case(ueu_case),
+                    "price_scenario_name": _infer_price_scenario_name(ueu_case),
                     "combined_cluster": "",
                     "temperature_level": "",
                     "constraint_type": "",
@@ -709,6 +780,8 @@ def run_post_processing(
             all_summaries.append(
                 {
                     "ueu_case": ueu_case,
+                    "base_ueu_case": _infer_base_ueu_case(ueu_case),
+                    "price_scenario_name": _infer_price_scenario_name(ueu_case),
                     "combined_cluster": "",
                     "temperature_level": "",
                     "constraint_type": "",
@@ -763,7 +836,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Comma-separated UEU case folders. Omit this when --input-root points "
-            "directly to one processed_bds_in... folder."
+            "directly to one processed_bds_in... folder. With --price-scenarios, "
+            "provide the base UEU folder name without the price-scenario suffix."
+        ),
+    )
+    parser.add_argument(
+        "--price-scenarios",
+        default=None,
+        help=(
+            "Comma-separated centralized price scenarios to process, or 'all'. "
+            "Non-ref scenarios are expected in folders named like "
+            "processed_bds_in_DENI..._<price_scenario>."
         ),
     )
     parser.add_argument("--combined-cluster-glob", default="combined_cluster_*")
@@ -790,6 +873,7 @@ def main() -> None:
         input_root=_resolve_user_path(args.input_root),
         output_root=_resolve_user_path(args.output_root),
         ueu_cases=_parse_csv_values(args.ueu_case),
+        price_scenarios=_parse_price_scenarios(args.price_scenarios),
         combined_cluster_glob=args.combined_cluster_glob,
         result_kind=args.result_kind,
         temperature_levels=_parse_temperature_levels(args.temperature_levels),
