@@ -18,10 +18,11 @@ SRC_DIR = SCRIPT_DIR.parents[3]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-DEFAULT_INPUT_AND_RESULT_ROOT = SCRIPT_DIR
+DEFAULT_INPUT_AND_RESULT_ROOT = (
+    Path.home() / "Desktop" / "From Luis" / "Case Studies" / "Small New"
+)
 DEFAULT_PROCESSED_DIRS = [
-    DEFAULT_INPUT_AND_RESULT_ROOT / "processed_bds_in_DENI03403000SEC5101",
-    DEFAULT_INPUT_AND_RESULT_ROOT / "processed_bds_in_DENI03403000SEC4580",
+    DEFAULT_INPUT_AND_RESULT_ROOT / "processed_bds_in_DENI03403000SEC5658",
 ]
 DEFAULT_COMBINATION_CONFIG = SCRIPT_DIR / "centralized_k_combinations_by_ueu.json"
 DEFAULT_COMBINATION_CONFIGS = {
@@ -42,16 +43,24 @@ DEFAULT_COMBINATION_CONFIGS = {
     },
 }
 DEFAULT_STATUS_DIRNAME = "_centralized_serial_peak_subset_status"
-DEFAULT_TEMP = 50
-DEFAULT_SCENARIO_MODE = "capex_min_only"
+DEFAULT_TEMP = 80
+DEFAULT_SCENARIO_MODE = "capex_max_only"
 DEFAULT_RUN_CONFIGS = [
-    (50, "capex_min_only"),
+    (80, "capex_min_only"),
     (80, "capex_max_only"),
 ]
 DEFAULT_CO2_FACTORS = [1.0, 0.85]
-DEFAULT_PEAK_FACTORS = [1.0, 0.65,0.2]
+DEFAULT_PEAK_FACTORS = [1.0, 0.65, 0.2]
 DEFAULT_SOLVER = "gurobi"
 DEFAULT_SOLVER_THREADS = 0
+DEFAULT_TARGET_COMBINATIONS_BY_UEU = {
+    "processed_bds_in_DENI03403000SEC5658": {
+        6: [1, 2, 3, 4, 5, 6, "reference"],
+        8: [2, 3, 4, 5, 6, "reference"],
+        10: [1, 2, 3, 5],
+        14: [1, 5, 6, "reference"],
+    },
+}
 
 
 def _load_centralized_module():
@@ -64,7 +73,14 @@ def _load_centralized_module():
     return module
 
 
-CEN = _load_centralized_module()
+CEN = None
+
+
+def _centralized_module():
+    global CEN
+    if CEN is None:
+        CEN = _load_centralized_module()
+    return CEN
 
 
 def _to_long_path(path: Path) -> str:
@@ -149,7 +165,46 @@ def _parse_run_configs(raw: str) -> list[tuple[int, str]]:
 
 
 def _format_k(k_value: Any) -> str:
-    return CEN._format_k_for_folder(k_value)
+    if str(k_value).lower() == "reference":
+        return "reference"
+    return f"k{int(k_value):02d}"
+
+
+def _co2_factor_to_suffix(factor: float) -> str:
+    value = float(factor)
+    if value.is_integer():
+        return str(int(value))
+    suffix = f"{value:.6f}".rstrip("0").rstrip(".")
+    if suffix.startswith("-0."):
+        return "m0" + suffix[3:]
+    if suffix.startswith("0."):
+        return "0" + suffix[2:]
+    return suffix.replace(".", "")
+
+
+def _expected_scenario_tokens_for_mode(scenario_mode: str, heat_grid_temperature: int | None = None) -> list[str] | None:
+    if scenario_mode == "capex_min_only":
+        return ["cmin"]
+    if scenario_mode == "capex_max_only":
+        if heat_grid_temperature is not None and int(heat_grid_temperature) == 50:
+            return []
+        return ["cmax"]
+    if scenario_mode in {"capex_min_max_only", "cmin_cmax_only"}:
+        if heat_grid_temperature is not None and int(heat_grid_temperature) == 50:
+            return ["cmin"]
+        return ["cmin", "cmax"]
+    return None
+
+
+def _target_combinations_for_ueu(ueu_name: str) -> list[tuple[Any, Any]] | None:
+    target_by_sfh = DEFAULT_TARGET_COMBINATIONS_BY_UEU.get(ueu_name)
+    if target_by_sfh is None:
+        return None
+    return [
+        (sfh_k, mfh_k)
+        for sfh_k, mfh_values in target_by_sfh.items()
+        for mfh_k in mfh_values
+    ]
 
 
 def _load_combination_config(path: Path, ueu_name: str) -> dict[str, Any]:
@@ -176,7 +231,7 @@ def _simple_file_path(
         processed_dir
         / f"combined_cluster_sfh_{_format_k(sfh_k)}_mfh_{_format_k(mfh_k)}"
         / "centralized"
-        / f"res_cen_t{int(temp)}_{scenario_token}_simple_co2_{CEN._co2_factor_to_suffix(co2_factor)}.pkl"
+        / f"res_cen_t{int(temp)}_{scenario_token}_simple_co2_{_co2_factor_to_suffix(co2_factor)}.pkl"
     )
 
 
@@ -331,8 +386,8 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Run centralized combined-cluster jobs serially for a small "
             "CO2/peak subset, with one unrestricted Gurobi solve at a time. "
-            "Defaults target SEC5101 and SEC4580 below this script's "
-            "03_applied_energy_optimization folder."
+            "Defaults target the SEC5658 t80 repair subset in the local "
+            "Small New result folder and overwrite existing simple result files."
         )
     )
     parser.add_argument(
@@ -400,8 +455,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--price-scenario", type=str, default="ref")
     parser.add_argument("--max-combos", type=int, default=None)
+    parser.add_argument(
+        "--all-combinations",
+        action="store_true",
+        help="Ignore the built-in SEC5658 t80 repair subset and iterate over all configured k combinations.",
+    )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--skip-existing",
+        dest="overwrite",
+        action="store_false",
+        help="Do not recompute files that already contain all requested peak entries.",
+    )
+    parser.set_defaults(overwrite=True)
     return parser.parse_args()
 
 
@@ -416,12 +482,13 @@ def _run_config(
     heat_grid_length: float,
     sfh_values: list[Any],
     mfh_values: list[Any],
+    target_combinations: list[tuple[Any, Any]] | None,
     temp: int,
     scenario_mode: str,
 ) -> None:
     co2_factors = _parse_float_list(args.co2_factors)
     peak_factors = _parse_float_list(args.peak_factors)
-    scenario_tokens = CEN._expected_scenario_tokens_for_mode(scenario_mode, temp)
+    scenario_tokens = _expected_scenario_tokens_for_mode(scenario_mode, temp)
     if scenario_tokens is None:
         raise ValueError(
             f"Cannot pre-check scenario_mode={scenario_mode}, temp={temp}. "
@@ -436,12 +503,31 @@ def _run_config(
     error_dir = status_dir / "errors"
     _mkdir(status_dir)
 
-    CEN.INPUT_ROOT = str(input_root)
-    CEN.RESULT_STORAGE_ROOT = str(output_root)
-    CEN.SOLVER = str(args.solver)
-    CEN.SOLVER_THREADS = int(args.solver_threads)
+    cen_module = None
+    if not args.dry_run:
+        cen_module = _centralized_module()
+        cen_module.INPUT_ROOT = str(input_root)
+        cen_module.RESULT_STORAGE_ROOT = str(output_root)
+        cen_module.SOLVER = str(args.solver)
+        cen_module.SOLVER_THREADS = int(args.solver_threads)
 
-    combos = [(sfh_k, mfh_k) for sfh_k in sfh_values for mfh_k in mfh_values]
+    if target_combinations is None:
+        combos = [(sfh_k, mfh_k) for sfh_k in sfh_values for mfh_k in mfh_values]
+    else:
+        allowed_sfh = set(sfh_values)
+        allowed_mfh = set(mfh_values)
+        invalid_combos = [
+            (sfh_k, mfh_k)
+            for sfh_k, mfh_k in target_combinations
+            if sfh_k not in allowed_sfh or mfh_k not in allowed_mfh
+        ]
+        if invalid_combos:
+            invalid_text = ", ".join(
+                f"sfh={_format_k(sfh_k)} mfh={_format_k(mfh_k)}"
+                for sfh_k, mfh_k in invalid_combos
+            )
+            raise ValueError(f"Target combinations are not in the UEU config: {invalid_text}")
+        combos = list(target_combinations)
     if args.max_combos is not None:
         combos = combos[: args.max_combos]
 
@@ -449,11 +535,13 @@ def _run_config(
     print(f"output_processed_dir={output_processed_dir}")
     print(f"input_ueu={input_ueu_name}")
     print(f"output_ueu={output_ueu_name}")
-    print(f"input_root={CEN.INPUT_ROOT}")
-    print(f"result_storage_root={CEN.RESULT_STORAGE_ROOT}")
+    print(f"input_root={input_root}")
+    print(f"result_storage_root={output_root}")
     print(f"combinations={len(combos)}")
+    if target_combinations is not None:
+        print("combination_subset=SEC5658 t80 repair subset")
     print(f"temp={temp} scenario_mode={scenario_mode} scenarios={scenario_tokens} co2={co2_factors} peak={peak_factors}")
-    print(f"solver={CEN.SOLVER} solver_threads={CEN.SOLVER_THREADS}")
+    print(f"solver={args.solver} solver_threads={args.solver_threads}")
     if args.dry_run:
         print("dry_run=true")
 
@@ -515,7 +603,9 @@ def _run_config(
             continue
 
         try:
-            CEN.run_main(
+            if cen_module is None:
+                raise RuntimeError("Centralized module was not loaded before executing a real run.")
+            cen_module.run_main(
                 heat_grid_temperature=temp,
                 ueu=input_ueu_name,
                 heat_grid_length=heat_grid_length,
@@ -616,6 +706,7 @@ def main() -> None:
         heat_grid_length = float(config["heat_grid_length"])
         sfh_values = config["sfh_k"]
         mfh_values = config["mfh_k"]
+        target_combinations = None if args.all_combinations else _target_combinations_for_ueu(input_ueu_name)
 
         print(f"\nprocessed_dir {processed_index}/{len(processed_dirs)} {input_processed_dir}")
         print(f"output_dir {output_processed_dir}")
@@ -632,6 +723,7 @@ def main() -> None:
                 heat_grid_length,
                 sfh_values,
                 mfh_values,
+                target_combinations,
                 temp,
                 scenario_mode,
             )
